@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { createHash, createPublicKey, constants, verify } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { discoverManagedServer, verifySignedManifest } from '../src/main/core/managedServerProtocol'
 
 const require = createRequire(import.meta.url)
@@ -27,10 +28,16 @@ test('managed publisher: Windows ACL commands use fixed encoded scripts, protect
   publisher.windowsPrivateAcl(filename, true, false, runner)
   publisher.windowsPrivateAcl(filename, false, false, runner)
   for (const [command, args, options] of calls) {
-    assert.equal(command, 'powershell.exe'); assert.equal(args[3], '-EncodedCommand')
+    assert.match(command, /^[A-Za-z]:[\\/].*[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i)
+    assert.equal(args[3], '-EncodedCommand')
     const script = Buffer.from(args[4], 'base64').toString('utf16le')
     assert(!script.includes(filename)); assert.equal(options.env.KAMUCL_PRIVATE_KEY_CHECK, filename)
-    assert.match(script, /Get-Acl -LiteralPath \$env:KAMUCL_PRIVATE_KEY_CHECK/)
+    assert.match(script, /\[System\.IO\.(?:File|Directory)\]::GetAccessControl\(\$env:KAMUCL_PRIVATE_KEY_CHECK\)/)
+    assert.match(script, /GetAccessRules\(\$true,\$true,\[System\.Security\.Principal\.SecurityIdentifier\]\)/)
+    assert.match(script, /\$PSModuleAutoLoadingPreference='None'/)
+    assert.match(script, /PSEdition -ne 'Desktop'/)
+    assert.match(script, /PSVersion\.Major -ne 5/)
+    assert(!/\b(?:Get-Acl|Set-Acl|Where-Object|Import-Module)\b/.test(script))
     assert.match(script, /Untrusted principal/)
     assert.equal(options.timeout, 10000); assert.equal(options.maxBuffer, 64 * 1024)
   }
@@ -38,10 +45,44 @@ test('managed publisher: Windows ACL commands use fixed encoded scripts, protect
   assert.match(directoryScript, /DirectorySecurity\]::new/)
   assert.match(directoryScript, /SetAccessRuleProtection\(\$true,\$false\)/)
   assert.match(directoryScript, /ContainerInherit,ObjectInherit/)
+  assert.match(directoryScript, /\[System\.IO\.Directory\]::SetAccessControl\(\$env:KAMUCL_PRIVATE_KEY_CHECK,\$taskAcl\)/)
+  assert.match(directoryScript, /AreAccessRulesProtected/)
+  const fileScript = Buffer.from(calls[1][1][4], 'base64').toString('utf16le')
+  assert.match(fileScript, /\[System\.IO\.File\]::SetAccessControl\(\$env:KAMUCL_PRIVATE_KEY_CHECK,\$taskAcl\)/)
+  const inspectScript = Buffer.from(calls[2][1][4], 'base64').toString('utf16le')
+  assert(!inspectScript.includes('::SetAccessControl('), 'inspection must never rewrite existing ACLs')
+  assert.match(inspectScript, /Private ACL has no trusted allowed principal/)
   assert.throws(() => publisher.windowsPrivateAcl(filename, true, false, () => ({ status: 1, stderr: filename + '\n denied' })), error => {
     assert.match(String(error), /Unable to create private Windows ACL/); assert(!String(error).includes(filename)); return true
   })
   assert.throws(() => publisher.windowsPrivateAcl(filename, false, false, () => ({ status: 1, stderr: 'denied' })), /Signing key ACL must allow only/)
+  assert.throws(() => publisher.windowsPrivateAcl(filename, false, false, () => ({ status: null, error: new Error('spawn failed') })), /Signing key ACL must allow only/)
+})
+
+test('managed publisher: native Windows ACLs ignore poisoned parent PSModulePath and reject an Everyone allow ACE', { skip: process.platform !== 'win32' }, async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'kamucl-native-acl-')))
+  const privateDirectory = path.join(root, 'private 中文 [literal]')
+  const filename = path.join(privateDirectory, 'placeholder [key].txt')
+  let command = '', environment: NodeJS.ProcessEnv = {}
+  const runner = (executable: string, args: string[], options: any) => {
+    command = executable
+    environment = { ...options.env, PSModulePath: path.join(root, 'missing-incompatible-parent-modules') }
+    return spawnSync(executable, args, { ...options, env: environment })
+  }
+  try {
+    await fs.mkdir(privateDirectory)
+    publisher.windowsPrivateAcl(privateDirectory, true, true, runner)
+    // This placeholder is created only after its parent ACL is protected.
+    await fs.writeFile(filename, 'synthetic placeholder, not a key')
+    publisher.windowsPrivateAcl(filename, true, false, runner)
+    publisher.windowsPrivateAcl(filename, false, false, runner)
+    const script = "$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; $taskAcl=[System.IO.File]::GetAccessControl($env:KAMUCL_PRIVATE_KEY_CHECK); $taskIdentity=[System.Security.Principal.SecurityIdentifier]::new('S-1-1-0'); $taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::Read,[System.Security.AccessControl.AccessControlType]::Allow); $taskAcl.AddAccessRule($taskRule); [System.IO.File]::SetAccessControl($env:KAMUCL_PRIVATE_KEY_CHECK,$taskAcl)"
+    const broadened = spawnSync(command, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024, env: { ...environment, KAMUCL_PRIVATE_KEY_CHECK: filename }, encoding: 'utf8'
+    })
+    assert.equal(broadened.status, 0, broadened.error?.message || broadened.stderr)
+    assert.throws(() => publisher.windowsPrivateAcl(filename, false, false, runner), /Signing key ACL must allow only.*Untrusted principal/)
+  } finally { await fs.rm(root, { recursive: true, force: true }) }
 })
 
 async function fixture() {

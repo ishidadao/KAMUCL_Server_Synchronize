@@ -144,12 +144,20 @@ async function readBounded(filename, limit) {
 }
 /** Fixed script, encoded UTF-16LE: file paths are data in the child environment. */
 function windowsPrivateAcl(filename, initialize = false, isDirectory = false, runner = spawnSync) {
-  const setup = "$ErrorActionPreference='Stop'; $taskUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $taskAllowed=@($taskUser.Value,'S-1-5-18','S-1-5-32-544'); "
+  // Windows PowerShell 5.1 Desktop exposes these ACL APIs in mscorlib. Do not
+  // import Get/Set-Acl: a parent pwsh7 may pass its incompatible PSModulePath.
+  const windowsRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
+  if (!/^[A-Za-z]:[\\/]/.test(windowsRoot) || windowsRoot.split(/[\\/]/).some(part => part === '..')) throw new Error('Cannot locate system Windows PowerShell')
+  const executable = path.win32.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const api = isDirectory ? '[System.IO.Directory]' : '[System.IO.File]'
+  const setup = "$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; if($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5){throw 'Windows PowerShell 5.1 Desktop is required for private ACLs'}; $taskUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $taskAllowed=@($taskUser.Value,'S-1-5-18','S-1-5-32-544'); "
   const script = setup + (initialize
     ? "$taskAcl=" + (isDirectory ? '[System.Security.AccessControl.DirectorySecurity]' : '[System.Security.AccessControl.FileSecurity]') + "::new(); $taskAcl.SetOwner($taskUser); $taskAcl.SetAccessRuleProtection($true,$false); foreach($taskSid in $taskAllowed) { $taskIdentity=[System.Security.Principal.SecurityIdentifier]::new($taskSid); $taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::FullControl,[System.Security.AccessControl.AccessControlType]::Allow); " + (isDirectory
-      ? "$taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::FullControl,[System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',[System.Security.AccessControl.PropagationFlags]::None,[System.Security.AccessControl.AccessControlType]::Allow); " : '') + "$taskAcl.AddAccessRule($taskRule) }; Set-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK -AclObject $taskAcl; "
-    : '') + "$taskActual=Get-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK; $taskBad=$taskActual.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $taskAllowed -notcontains $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }; if($taskBad){throw 'Untrusted principal is allowed to access this private path'}"
-  const result = runner('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      ? "$taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::FullControl,[System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',[System.Security.AccessControl.PropagationFlags]::None,[System.Security.AccessControl.AccessControlType]::Allow); " : '') + "$taskAcl.AddAccessRule($taskRule) }; " + api + "::SetAccessControl($env:KAMUCL_PRIVATE_KEY_CHECK,$taskAcl); "
+    : '') + "$taskActual=" + api + "::GetAccessControl($env:KAMUCL_PRIVATE_KEY_CHECK); " + (initialize
+      ? "if(-not $taskActual.AreAccessRulesProtected){throw 'Private ACL inheritance was not protected'}; " : '') +
+    "$taskRules=$taskActual.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]); $taskHasAllow=$false; foreach($taskRule in $taskRules){if($taskRule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow){$taskHasAllow=$true; if($taskAllowed -notcontains $taskRule.IdentityReference.Value){throw 'Untrusted principal is allowed to access this private path'}}}; if(-not $taskHasAllow){throw 'Private ACL has no trusted allowed principal'}"
+  const result = runner(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
     windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024, env: { ...process.env, KAMUCL_PRIVATE_KEY_CHECK: filename }, encoding: 'utf8'
   })
   if (result.error || result.status !== 0) {

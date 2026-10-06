@@ -42,7 +42,10 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Tests
-        run: npm test
+        run: |
+          New-Item -ItemType Directory -Path out -Force | Out-Null
+          npm test | Tee-Object -FilePath out/windows-managed-tests.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Require complete license review before packaging
         # Fails on unresolved permissions; do not replace with --materials-only
         # or continue-on-error. The portable build hook independently rechecks.
@@ -99,6 +102,8 @@ jobs:
           path: |
             out/windows-package-*.json
             out/windows-managed-package.log
+            out/windows-managed-tests.log
+            out/qa-entry-proof-win32-*/**
             out/source-audit-*.json
             out/source-audit-*.log
           if-no-files-found: ignore
