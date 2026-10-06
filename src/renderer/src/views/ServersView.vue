@@ -6,6 +6,7 @@ import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   addServer,
   favoriteServer,
+  getInstalled,
   editServer,
   copyText,
   bindServer,
@@ -22,10 +23,12 @@ import ConnectionStatus from '../components/connection/ConnectionStatus.vue'
 import ServerListItem from '../components/connection/ServerListItem.vue'
 import ServerDetails from '../components/connection/ServerDetails.vue'
 import ServerAddress from '../components/connection/ServerAddress.vue'
+import ManagedServerImport from '../components/ManagedServerImport.vue'
 import { privateServerText, serverAddressRevealed } from '@shared/serverPrivacy'
 import '../components/connection/connection.css'
 import { selectInstance, selectedInstance, refreshInstalled, store, toast } from '../store'
 import type { InstalledVersion, ServerEntry, ServerPingResult } from '@shared/types'
+import type { ManagedServerSyncResult } from '@shared/managedServer'
 
 // ---------------- 列表与状态 ----------------
 const servers = ref<ServerEntry[]>([])
@@ -35,6 +38,35 @@ const loading = ref(true)
 const refreshing = ref(false), launchBusy = ref(false), bindingId = ref(''), loadError = ref('')
 const activeId = ref('')
 const revealedAddress = ref<{ id: string; address: string } | null>(null)
+const managedImport = reactive({ open: false, address: '' })
+
+function openManagedImport(address = '') {
+  managedImport.address = address
+  managedImport.open = true
+}
+
+async function onManagedInstalled(result: ManagedServerSyncResult) {
+  try {
+    // The backend chooses a dedicated isolated instance; do not reuse a manually
+    // selected ordinary instance or guess a target from the server ping string.
+    await selectInstance(result.version.id, result.version.folder)
+    const [installed, records] = await Promise.all([getInstalled(true), listServers()])
+    store.installed = installed
+    targets.value = installed
+    servers.value = records
+    const managedRecord = records.find(server => server.versionId === result.version.id &&
+      !!server.folder && normalizedPath(server.folder) === normalizedPath(result.version.folder))
+    if (managedRecord) { activeId.value = managedRecord.id; void pingOne(managedRecord) }
+    toast('服务器整合包同步完成，已选择对应隔离实例', 'success')
+  } catch (error) {
+    toast('文件同步已完成，但刷新实例列表失败：' + errText(error), 'error')
+  }
+}
+
+function viewManagedInstance() {
+  managedImport.open = false
+  store.currentView = 'game'
+}
 const addressRevealed = (server: ServerEntry) => serverAddressRevealed(server, revealedAddress.value)
 const hideAddresses = () => { revealedAddress.value = null }
 function toggleAddress(server: ServerEntry) {
@@ -381,11 +413,11 @@ async function copyAddress(s: ServerEntry) {
   <div data-ui="ServersView:b824bf7cac3c" class="connect-page servers-page">
     <header data-ui="ServersView:c2edecc77ee3" class="connection-header">
       <div><h1 data-ui="ServersView:ee8e70e0acab">服务器 <small>{{ servers.length }} 个 · {{ onlineCount }} 个在线</small></h1></div>
-      <button data-ui="ServersView:c8a77fb10c66" class="btn btn-gold" :disabled="loading" @click="openAdd()"><span data-ui="ServersView:12718dc300bd" aria-hidden="true">＋</span> 添加服务器</button>
+      <div class="connection-actions"><button type="button" class="btn btn-ghost" @click="openManagedImport()">从服务器同步</button><button data-ui="ServersView:c8a77fb10c66" class="btn btn-gold" :disabled="loading" @click="openAdd()"><span data-ui="ServersView:12718dc300bd" aria-hidden="true">＋</span> 添加服务器</button></div>
     </header>
     <div data-ui="ServersView:eee6f822ac69" class="server-toolbar">
       <label data-ui="ServersView:fd69834ac923" class="server-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input data-ui="ServersView:3445c173cb2a" v-model="store.searchKeyword" type="search" placeholder="搜索名称、地址或服务器介绍" aria-label="搜索服务器" /></label>
-      <div data-ui="ServersView:1b941bebf470" class="connection-actions"><button data-ui="ServersView:d1988c769077" class="btn btn-ghost" :disabled="refreshing || loading || !servers.length" @click="pingAll">{{ refreshing ? '刷新中…' : '刷新状态' }}</button><button data-ui="ServersView:976ee42760fa" class="btn btn-ghost" :disabled="loading || !!bindingId || launchBusy" @click="syncNow">{{ loading ? '同步中…' : '同步游戏列表' }}</button><button data-ui="ServersView:6701e62ae081" class="btn btn-ghost" :disabled="!servers.length || loading" @click="toggleSelectMode">{{ selectMode ? '退出多选' : '批量管理' }}</button></div>
+      <div data-ui="ServersView:1b941bebf470" class="connection-actions"><button data-ui="ServersView:d1988c769077" class="btn btn-ghost" :disabled="refreshing || loading || !servers.length" @click="pingAll">{{ refreshing ? '刷新中…' : '刷新状态' }}</button><button v-if="activeServer" type="button" class="btn btn-ghost" :disabled="loading" @click="openManagedImport(activeServer.address)">同步所选整合包</button><button data-ui="ServersView:976ee42760fa" class="btn btn-ghost" :disabled="loading || !!bindingId || launchBusy" @click="syncNow">{{ loading ? '同步中…' : '同步游戏列表' }}</button><button data-ui="ServersView:6701e62ae081" class="btn btn-ghost" :disabled="!servers.length || loading" @click="toggleSelectMode">{{ selectMode ? '退出多选' : '批量管理' }}</button></div>
     </div>
     <p data-ui="ServersView:de3efa1d5d8c" v-if="loadError" class="connection-error" role="alert">{{ loadError }} <button data-ui="ServersView:99e827f2934b" class="btn btn-ghost" @click="load">重试</button></p>
 
@@ -402,6 +434,7 @@ async function copyAddress(s: ServerEntry) {
       </section>
       <ServerDetails v-if="activeServer" :server="activeServer" :ping="pingOf(activeServer)" :pending="pings[activeServer.id] === 'loading'" :busy="launchBusy || store.launchState?.status === 'running' || store.launchState?.status === 'launching'" :running="store.launchState?.status === 'running'" :binding="!!bindingId" :targets="targets" :bound="boundToken(activeServer)" :missing="versionMissing(activeServer)" :last-used="formatLastUsed(activeServer.lastUsedAt)" :target-token="targetToken" :target-label="targetLabel" :address-revealed="addressRevealed(activeServer)" @address="toggleAddress(activeServer)" @bind="onBind(activeServer, $event)" @connect="onCardDblClick(activeServer)" @refresh="pingOne(activeServer)" @edit="openAdd(activeServer)" @remove="requestDelete(activeServer)" @relink="relinkMissing(activeServer)" @versions="store.currentView = 'game'" @copy="copyAddress(activeServer)" />
     </div>
+    <ManagedServerImport v-if="managedImport.open" :initial-address="managedImport.address" @dismiss="managedImport.open = false" @installed="onManagedInstalled" @view-instance="viewManagedInstance" />
     <!-- 添加模态框 -->
     <Teleport to="body">
       <div data-ui="ServersView:9f87bde5903a" v-if="addModal.open" class="modal-mask connection-modal" @pointerdown.self="!addModal.busy && (addModal.open = false)">

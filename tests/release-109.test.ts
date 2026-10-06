@@ -36,9 +36,12 @@ test('launch: game process survives launcher exit via CreateProcessW detach + ru
   // 运行状态持久化与恢复保留
   assert.match(launch, /function persistRunningGame/)
   assert.match(launch, /export function restoreRunningGame/)
-  assert.match(launch, /running-game\.json/)
+  assert.match(launch, /RunningGameRecords/)
+  const records = read('src/main/core/runningGameRecords.ts')
+  assert.match(records, /running-game\.json/)
+  assert.match(records, /running-games/)
   // 存活探测
-  assert.match(launch, /process\.kill\(record\.pid, 0\)/)
+  assert.match(records, /process\.kill\(pid, 0\)/)
   const ipc = read('src/main/ipc.ts')
   assert.match(ipc, /boot:renderer-ready/)
   assert.match(ipc, /restoreRunningGame/)

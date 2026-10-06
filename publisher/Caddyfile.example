@@ -1,0 +1,30 @@
+# Replace mc.example.com and /var/www/kamucl-sync. Use the SAME host
+# as serverAddress; Minecraft TCP port 25565 is separate from HTTPS 443/4443.
+# For 4443, change the first line to https://mc.example.com:4443.
+mc.example.com {
+  @discovery path /.well-known/kamucl-managed.json /.well-known/pcl-managed.json
+  handle @discovery {
+    root * /var/www/kamucl-sync
+    header Cache-Control "no-store"
+    header X-Content-Type-Options "nosniff"
+    file_server
+  }
+  @manifest path /managed/manifest.json
+  handle @manifest {
+    rewrite * /manifest.json
+    root * /var/www/kamucl-sync
+    header Cache-Control "no-store"
+    header X-Content-Type-Options "nosniff"
+    file_server
+  }
+  @objects path /managed/objects/*
+  handle @objects {
+    uri strip_prefix /managed
+    root * /var/www/kamucl-sync
+    header Cache-Control "public, max-age=31536000, immutable"
+    header X-Content-Type-Options "nosniff"
+    file_server
+  }
+  # No directory browse, private key/config/log/lock or general reverse proxy.
+  handle { respond 404 }
+}

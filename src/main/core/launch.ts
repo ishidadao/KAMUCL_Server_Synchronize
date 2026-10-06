@@ -63,6 +63,8 @@ import { buildGameWindowArguments, resolveGameResolution } from './gameWindow'
 import { supportsQuickPlayMultiplayer } from './serverUtils'
 import * as yggdrasil from './yggdrasil'
 import { serializeYggdrasilUserProperties } from './yggdrasilProvider'
+import { RunningGameRecords, type RunningGameRecord } from './runningGameRecords'
+import type { ManagedLaunchLease } from './managedServerLease'
 
 export type ProgressEmit = (e: ProgressEvent) => void
 export type SendLog = (line: string) => void
@@ -70,7 +72,7 @@ export type OnState = (s: LaunchState) => void
 
 const gameSession = new GameSession()
 export const isBusy = () => gameSession.busy || !!restartPending
-interface LaunchOptions { createCommandWorld?: boolean; singleplayerWorld?: string }
+interface LaunchOptions { createCommandWorld?: boolean; singleplayerWorld?: string; managedLaunchId?: string }
 interface Invocation { versionId: string; folder: string; emit: ProgressEmit; sendLog: SendLog; onState: OnState; serverAddress?: string; options: LaunchOptions }
 let invocation: Invocation | undefined
 let restartPending: { invocation: Invocation; sessionToken?: symbol; forceToken?: string; waiting: boolean } | undefined
@@ -104,10 +106,11 @@ export async function restartGame(versionId: string, folder: string, forceToken?
   const previous = restartPending.invocation
   try {
     previous.onState({ status: 'launching', text: '游戏已确认退出，正在重新启动同一实例…' })
-    const token = gameSession.reserve(previous.versionId)
+    // Re-enter the common gate: a managed restart must verify the pack too.
+    restartPending = undefined
     try {
-      await withGameFolder(previous.folder, () => launchOwned(previous.versionId, previous.emit, previous.sendLog, previous.onState, previous.serverAddress, token, { ...previous.options, createCommandWorld: false }))
-    } catch (error) { gameSession.release(token); previous.onState({ status: 'error', text: error instanceof Error ? error.message : String(error) }); throw error }
+      await withGameFolder(previous.folder, () => launch(previous.versionId, previous.emit, previous.sendLog, previous.onState, previous.serverAddress, { ...previous.options, createCommandWorld: false }))
+    } catch (error) { previous.onState({ status: 'error', text: error instanceof Error ? error.message : String(error) }); throw error }
     return { requiresForce: false }
   } finally { restartPending = undefined }
 }
@@ -150,28 +153,20 @@ export function getLastLaunch(): LastLaunchInfo | null {
 
 // ---------------- 运行中游戏持久化（重开启动器识别并恢复） ----------------
 
-interface RunningGameRecord {
-  pid: number
-  versionId: string
-  effectiveGameDir: string
-  logDir: string
-  startedAt: string
-}
-
-function runningGameFile(): string {
-  return path.join(app.getPath('userData'), 'running-game.json')
-}
+const runningDirectories = new Map<number, string>()
+export function getRunningGameDirectories(): string[] { return [...runningDirectories.values()] }
+function runningRecords(): RunningGameRecords { return new RunningGameRecords(app.getPath('userData')) }
 
 function persistRunningGame(record: RunningGameRecord): void {
   try {
-    fs.writeFileSync(runningGameFile(), JSON.stringify(record, null, 2), 'utf-8')
-  } catch { /* 写入失败不影响启动 */ }
+    runningRecords().write(record)
+  } catch (error) { launchLog.error('无法持久化游戏进程记录；当前会话仍保持目录运行保护', error) }
 }
 
-function clearRunningGame(): void {
-  try {
-    fs.rmSync(runningGameFile(), { force: true })
-  } catch { /* 忽略 */ }
+function clearRunningGame(pid: number): void {
+  runningDirectories.delete(pid)
+  try { runningRecords().remove(pid) }
+  catch (error) { launchLog.warn('游戏退出记录清理失败，下次启动将重新验证 PID', error) }
 }
 
 /**
@@ -180,20 +175,13 @@ function clearRunningGame(): void {
  * 进程句柄不重建（detached 后无法重连 stdio），日志从游戏目录 logs/latest.log 读取。
  */
 export function restoreRunningGame(onState: (s: LaunchState) => void): RunningGameRecord | null {
-  let record: RunningGameRecord | null = null
-  try {
-    const raw = JSON.parse(fs.readFileSync(runningGameFile(), 'utf-8'))
-    if (Number.isInteger(raw?.pid) && raw.pid > 0 && typeof raw.versionId === 'string') record = raw
-  } catch {
-    return null
-  }
-  if (!record) return null
-  try {
-    process.kill(record.pid, 0) // 存活探测（不杀进程）
-  } catch {
-    clearRunningGame() // 残留记录：进程已不在
-    return null
-  }
+  let records: RunningGameRecord[]
+  try { records = runningRecords().alive() }
+  catch (error) { launchLog.error('运行记录无法读取；受管同步将保持关闭', error); return null }
+  if (!records.length) return null
+  for (const record of records) onState({ status: 'running', versionId: record.versionId,
+    folder: record.folder, launchId: `detached:${record.pid}`, text: '检测到正在运行的游戏（启动器重启后恢复）' })
+  const record = records[records.length - 1]
   // 恢复到当前会话的状态跟踪
   lastLaunch = {
     versionId: record.versionId,
@@ -203,7 +191,6 @@ export function restoreRunningGame(onState: (s: LaunchState) => void): RunningGa
     logDir: record.logDir,
     pid: record.pid
   }
-  onState({ status: 'running', text: '检测到正在运行的游戏（启动器重启后恢复）' })
   return record
 }
 
@@ -269,20 +256,45 @@ export async function launch(
 ): Promise<void> {
   if (restartPending) throw new Error('正在重启游戏，请稍后再启动')
   requireDesktopGamePlatform(process.platform)
-  const token = gameSession.reserve(versionId)
+  let token = gameSession.reserve(versionId)
   launchLog.info(`开始启动实例 ${versionId}${serverAddress ? `（直达服务器 ${serverAddress}）` : ''}`)
   invocation = { versionId, folder: gameDir(), emit, sendLog, onState, serverAddress, options: { ...options } }
-  try { await launchOwned(versionId, emit, sendLog, onState, serverAddress, token, invocation.options) }
+  let lease: ManagedLaunchLease | undefined
+  let releaseLease: ((lease?: ManagedLaunchLease) => void) | undefined
+  try {
+    const { prepareManagedLaunch, beginManagedLaunch, endManagedLaunch } = await import('./managedServerService')
+    releaseLease = endManagedLaunch
+    lease = beginManagedLaunch(versionId, options.managedLaunchId)
+    const managedDeadline = new ProgressDeadline(120_000, () => undefined)
+    try {
+      const prepared = await prepareManagedLaunch(versionId, event => {
+        managedDeadline.progress(JSON.stringify([event.stage, event.progress, event.bytesDone, event.text]))
+        emit(event)
+      }, managedDeadline.signal, serverAddress, lease)
+      if (prepared) {
+        if (prepared.versionId !== versionId) {
+          const replacement = gameSession.reserve(prepared.versionId)
+          gameSession.release(token)
+          token = replacement
+          versionId = prepared.versionId
+          onState({ status: 'launching', versionId, text: '已准备服务器要求的新运行环境；旧实例完整保留' })
+        }
+        serverAddress = prepared.serverAddress
+        invocation = { versionId, folder: gameDir(), emit, sendLog, onState, serverAddress, options: { ...options } }
+      }
+    } finally { managedDeadline.dispose() }
+    await launchOwned(versionId, emit, sendLog, onState, serverAddress, token, invocation.options, lease)
+  }
   catch (error) {
     gameSession.release(token)
     launchLog.error(`实例 ${versionId} 启动失败`, error)
     throw error
-  }
+  } finally { releaseLease?.(lease) }
 }
 
 async function launchOwned(
   versionId: string, emit: ProgressEmit, sendLog: SendLog, onState: OnState,
-  serverAddress: string | undefined, token: symbol, options: LaunchOptions = {}
+  serverAddress: string | undefined, token: symbol, options: LaunchOptions = {}, lease?: ManagedLaunchLease
 ): Promise<void> {
   const settings = getSettings()
   const deadline = new ProgressDeadline(60000, () => onState({ status: 'error', text: '启动准备已连续 60 秒没有进展，已取消本次启动；正在收尾，请稍后重试。' }))
@@ -737,8 +749,11 @@ async function launchOwned(
   // 脱离式创建：游戏进程与启动器生命周期完全解耦（Windows CreateProcessW，见 gracefulClose.ts），
   // 关闭启动器时游戏继续运行；stdout/stderr 仍以管道回流，日志体验不变。
   deadline.signal.throwIfAborted()
-  for (const message of await upgradeInstalledBridge(effectiveGameDir, path.join(__dirname, 'kamucl-bridge.jar').replace('app.asar', 'app.asar.unpacked'))) log('[KAMUCL] ' + message)
+  // A signed managed pack owns its exact JAR bytes; never patch them after sync.
+  if (!lease) for (const message of await upgradeInstalledBridge(effectiveGameDir, path.join(__dirname, 'kamucl-bridge.jar').replace('app.asar', 'app.asar.unpacked'))) log('[KAMUCL] ' + message)
   deadline.signal.throwIfAborted()
+  const { assertManagedDirectoryLaunchAllowed } = await import('./managedServerService')
+  assertManagedDirectoryLaunchAllowed(effectiveGameDir, lease)
   deadline.dispose()
   const proc = await withDeadline(signal => spawnGameProcess(javaPath, args, { cwd: effectiveGameDir, signal }), 15000, '游戏进程创建超时，请检查 Java 与系统权限')
   gameSession.attach(token, proc)
@@ -757,7 +772,8 @@ async function launchOwned(
     pid: proc.pid
   }
   // 持久化运行中游戏记录：重开启动器时据此识别并恢复状态
-  persistRunningGame({ pid: proc.pid ?? 0, versionId, effectiveGameDir, logDir: launchLogDir, startedAt: lastLaunch.startedAt })
+  if (proc.pid) runningDirectories.set(proc.pid, effectiveGameDir)
+  persistRunningGame({ pid: proc.pid ?? 0, versionId, folder: gameDir(), effectiveGameDir, logDir: launchLogDir, startedAt: lastLaunch.startedAt })
   const exitRecord = rememberExit(() => exitHistory().begin('game', proc.pid ?? 0, versionId, {
     versionId, folder: folderOfVersion(versionId), javaPath, effectiveGameDir, logDir: launchLogDir, startedAt: lastLaunch!.startedAt, pid: proc.pid
   }))
@@ -790,6 +806,7 @@ async function launchOwned(
       return
     }
     if (!gameSession.release(token)) return
+    if (proc.pid) clearRunningGame(proc.pid)
     launchLog.error(`游戏进程启动失败：pid=${proc.pid ?? '未知'}`, err)
     if (exitRecord) rememberExit(() => exitHistory().end(exitRecord, null))
     logStream?.end()
@@ -803,6 +820,7 @@ async function launchOwned(
   })
   proc.on('close', (code) => {
     if (!gameSession.release(token)) return
+    if (proc.pid) clearRunningGame(proc.pid)
     const runS = spawnedAt ? Math.round((Date.now() - spawnedAt) / 1000) : null
     const intentional = restartPending?.sessionToken === token || gameSession.wasIntentionalStop(token)
     const exitKind = exitEvidence.classify(code, intentional, process.platform)
@@ -817,7 +835,6 @@ async function launchOwned(
     if (lastLaunch && lastLaunch.pid === proc.pid) {
       lastLaunch.exitCode = code
       lastLaunch.endedAt = new Date().toISOString()
-      clearRunningGame()
     }
     onState({ status: 'exited', code: code ?? -1, exitKind, intentionalRestart: restartPending?.sessionToken === token, intentionalStop: gameSession.wasIntentionalStop(token), text: exitKind === 'shutdown-timeout' ? '游戏已关闭；退出清理超时，日志已保留' : `游戏已退出 (code=${code ?? '未知'})` })
   })

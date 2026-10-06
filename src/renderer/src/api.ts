@@ -4,6 +4,7 @@
  */
 import { refreshSkinAfter } from './skinRevision'
 import { IPC, IPC_EVENT } from '@shared/types'
+import type { ManagedServerPreview, ManagedServerProgress, ManagedServerSyncResult } from '@shared/managedServer'
 import type {
   DefaultResourcePack,
   Account,
@@ -288,6 +289,18 @@ export const syncServersFromDat = (versionId?: string, folder?: string) =>
   invoke<ServerSyncResult>(IPC.serversSyncFromDat, versionId, folder)
 export const prepareServerLaunch = (id: string, versionId?: string, folder?: string) =>
   invoke<ServerLaunchPreparation>(IPC.serversPrepareLaunch, id, versionId, folder)
+
+// ---------------- 签名服务器整合包 ----------------
+/** 仅检查已签名的发现文档和清单，不安装或修改游戏实例。 */
+export const inspectManagedServer = (request: { address: string; operation: string }) =>
+  invoke<ManagedServerPreview>(IPC.managedServerInspect, request)
+/** 只提交检查票据；受管理的隔离实例路径由主进程决定。 */
+export const syncManagedServer = (request: { inspectionId: string; operation: string; confirmTrust?: boolean }) =>
+  invoke<ManagedServerSyncResult>(IPC.managedServerSync, request)
+export const cancelManagedServer = (operation: string) =>
+  invoke<boolean>(IPC.managedServerCancel, operation)
+export const onManagedServerProgress = (callback: (progress: ManagedServerProgress) => void) =>
+  subscribe<ManagedServerProgress>(IPC_EVENT.managedServerProgress, callback)
 
 // ---------------- MOD 拖入即装 ----------------
 export const getModTargets = () => invoke<{ versions: InstalledVersion[]; errors: string[] }>(IPC.modsTargets)

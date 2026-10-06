@@ -1,4 +1,5 @@
 import { currentPlatformInfo } from './platform'
+import { registerManagedServerIpc } from './core/managedServerIpc'
 import { registerRecordingsIpc } from './core/recordingsIpc'
 import { probeImport } from './core/importProbe'
 import { registerSkinEditorIpc } from './core/skinEditorIpc'
@@ -107,6 +108,7 @@ function errText(err: unknown): string {
 }
 
 export function registerIpc(getWin: () => BrowserWindow | null): void {
+  registerManagedServerIpc()
   registerSkinEditorIpc(getWin)
   registerModFavoritesIpc()
   registerSupplementalModsIpc(getWin)
@@ -157,7 +159,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     if (event.sender !== getWin()?.webContents) return
     const states = activeLaunchStates()
     for (const state of states) send(IPC_EVENT.launchState, state)
-    if (!states.length) launch.restoreRunningGame(state => send(IPC_EVENT.launchState, state))
+    if (!states.length) launch.restoreRunningGame(sendState)
   })
   ipcMain.handle(IPC.appearanceResetTheme, () => resetVisualTheme())
   ipcMain.handle(IPC.appearanceExportTheme, (_e, preview) => exportVisualTheme(preview?appearanceDraft.appearanceOnly(preview):undefined))
@@ -806,6 +808,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
             else if (code === 0 || s.intentionalStop || s.intentionalRestart) launcherLogInfo('game', `游戏已退出（code=${code}）：${s.text}`)
             else launcherLogWarn('game', `游戏异常退出（code=${code}）：${s.text}`)
           } else launcherLogInfo('game', `启动状态 ${s.status}：${s.text}`)
+          if (s.versionId) versionId = s.versionId
           sendState({ ...s, versionId, folder, launchId })
           // 设置项生效：游戏成功进入运行状态后关闭启动器窗口
           if (s.status === 'running' && settings.getSettings().closeAfterLaunch) {
@@ -813,7 +816,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
           }
         },
         serverAddress ? String(serverAddress) : undefined,
-        { createCommandWorld: createCommandWorld === true }
+        { createCommandWorld: createCommandWorld === true, managedLaunchId: launchId }
       )
       .catch((err) => {
         launch.recordLaunchPreparationError(String(versionId ?? ''), errText(err))

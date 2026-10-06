@@ -1,0 +1,8 @@
+/config*.json
+!config.example.json
+/private/
+/client-ready/
+/public/
+*.pem
+*.key
+*.lock

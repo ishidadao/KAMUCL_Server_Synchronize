@@ -843,6 +843,9 @@ export const IPC = {
   serversBind: 'servers:bind', // (id: string, versionId: string, folder?: string) => ServerEntry[]  绑定/解绑具体实例
   serversSyncFromDat: 'servers:syncFromDat', // (versionId?: string, folder?: string) => ServerSyncResult
   serversPrepareLaunch: 'servers:prepareLaunch', // (id: string, versionId?: string, folder?: string) => ServerLaunchPreparation
+  managedServerInspect: 'managed-server:inspect',
+  managedServerSync: 'managed-server:sync',
+  managedServerCancel: 'managed-server:cancel',
 
   // MOD 拖入即装
   appearanceResetTheme: 'appearance:resetTheme',
@@ -944,6 +947,7 @@ export interface FsEntry {
 
 // ---------------- IPC 事件（主进程 -> 前端，on 订阅） ----------------
 export const IPC_EVENT = {
+  managedServerProgress: 'managed-server:progress',
   progress: 'event:progress', // (e: ProgressEvent)
   launchLog: 'event:launchLog', // (line: string)
   launchState: 'event:launchState', // (s: LaunchState)

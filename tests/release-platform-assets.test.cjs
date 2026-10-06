@@ -36,7 +36,7 @@ test('asset names are unique basenames, and Windows refuses deferred current-ver
 
 // Execute the actual release entry in an isolated runtime: no real files are
 // changed and no credential, Git operation or network request can escape it.
-function isolatedRelease(args, { remoteMac = false, corruptDigest = false, staleMaster = false, observed = [] } = {}) {
+function isolatedRelease(args, { remoteMac = false, corruptDigest = false, staleMain = false, observed = [] } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/release-github.cjs'), 'utf8')
   const calls = observed, writes = [], messages = [], root = path.resolve(__dirname, '..'), releaseDir = path.join(root, 'release')
   const history = ['KAMUCL-1.1.9-validation-history-index.json', 'KAMUCL-1.1.9-validation-history-part001.zip']
@@ -47,7 +47,7 @@ function isolatedRelease(args, { remoteMac = false, corruptDigest = false, stale
   const response = (status, value) => ({ status, ok: status >= 200 && status < 300, json: async () => structuredClone(value), text: async () => JSON.stringify(value) })
   const fetch = async (url, options) => {
     calls.push(['api', options.method, url]); const endpoint = new URL(url), pathname = endpoint.pathname
-    if (pathname.endsWith('/branches/master')) return response(200, { commit: { sha: staleMaster ? 'b'.repeat(40) : commit } })
+    if (pathname.endsWith('/branches/main')) return response(200, { commit: { sha: staleMain ? 'b'.repeat(40) : commit } })
     if (pathname.includes('/git/ref/tags/')) return published ? response(200, { object: { type: 'commit', sha: commit } }) : response(404, {})
     if (pathname.includes('/releases/tags/')) return published ? response(200, { ...release, assets }) : response(404, {})
     if (pathname.endsWith('/releases') && options.method === 'GET') return response(200, [])
@@ -93,16 +93,25 @@ test('actual Windows dry run checksum list includes source, handoff and history 
   assert(result.calls.every(call => !['git', 'api'].includes(call[0])))
 })
 
-test('actual Windows release uploads only the scoped assets and publishes after all digest and tag/commit checks', async () => {
+test('actual Windows release uses only the own fork main branch and publishes scoped assets after all digest and tag/commit checks', async () => {
   const result = await isolatedRelease(['--platform=windows', '--notes-file=reviewed.md'])
   assert.equal(result.exitCode, 0); assert.equal(result.published, true)
   assert.deepEqual(result.assets.map(asset => asset.name), [...scope.releaseAssetNames(version, 'windows'), 'KAMUCL-1.1.9-validation-history-index.json', 'KAMUCL-1.1.9-validation-history-part001.zip', 'SHA256SUMS.txt'])
   assert(result.assets.every(asset => !macProducts.includes(asset.name)))
-  assert(result.calls.some(call => call[0] === 'api' && call[1] === 'GET' && call[2].includes('/branches/master')))
+  const apiCalls = result.calls.filter(call => call[0] === 'api')
+  assert(apiCalls.length > 0)
+  for (const call of apiCalls) {
+    const url = new URL(call[2])
+    assert(['api.github.com', 'uploads.github.com'].includes(url.hostname), 'only GitHub API/upload hosts are allowed')
+    assert(url.pathname.startsWith('/repos/ishidadao/KAMUCL_Update/'), 'every read and mutation must target the user fork, never upstream')
+    assert(!url.pathname.includes('/kamubaba-i/'), 'upstream must never receive release API requests')
+  }
+  assert(apiCalls.some(call => call[1] === 'GET' && call[2] === 'https://api.github.com/repos/ishidadao/KAMUCL_Update/branches/main'))
+  assert(apiCalls.every(call => !call[2].includes('/branches/master')))
   assert(result.calls.some(call => call[0] === 'api' && call[1] === 'GET' && call[2].includes('/git/ref/tags/')))
 })
 
-test('actual release preserves mismatched remote Mac draft and refuses publication on remote scope, SHA or master mismatch', async () => {
+test('actual release preserves mismatched remote Mac draft and refuses publication on remote scope, SHA or fork main mismatch', async () => {
   const args = ['--platform', 'windows', '--notes-file', 'reviewed.md']
   const mac = await isolatedRelease(args, { remoteMac: true })
   assert.equal(mac.exitCode, 1); assert.equal(mac.published, false); assert.equal(mac.assets.length, 1)
@@ -111,7 +120,7 @@ test('actual release preserves mismatched remote Mac draft and refuses publicati
   const corrupt = await isolatedRelease(args, { corruptDigest: true })
   assert.equal(corrupt.exitCode, 1); assert.equal(corrupt.published, false); assert(corrupt.calls.every(call => call[0] !== 'api' || call[1] !== 'PATCH'))
   assert(corrupt.messages.some(message => /远端附件大小或 SHA256 不匹配/.test(message)))
-  const stale = await isolatedRelease(args, { staleMaster: true })
+  const stale = await isolatedRelease(args, { staleMain: true })
   assert.equal(stale.exitCode, 1); assert.equal(stale.published, false); assert(stale.calls.every(call => call[0] !== 'api' || call[1] !== 'POST'))
-  assert(stale.messages.some(message => /本地 HEAD 尚未同步/.test(message)))
+  assert(stale.messages.some(message => /本地 HEAD 尚未同步到 origin\/main/.test(message)))
 })

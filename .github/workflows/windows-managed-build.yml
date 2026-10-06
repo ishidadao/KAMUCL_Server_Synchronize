@@ -1,0 +1,104 @@
+name: Windows managed-server build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# CI artifacts only. Never grant this workflow Release or upstream push access.
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-managed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    if: github.repository == 'ishidadao/KAMUCL_Update'
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Read exact package version
+        id: metadata
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npm test
+      - name: Require complete license review before packaging
+        # Fails on unresolved permissions; do not replace with --materials-only
+        # or continue-on-error. The portable build hook independently rechecks.
+        run: npm run license:check
+      - name: Build pinned bridge sources
+        run: node scripts/build-bridge.cjs
+      - name: Verify bridge lifecycle
+        run: node scripts/verify-bridge-exit.cjs
+      - name: Build application and Windows portable packages
+        # Actual project command: dist:win includes npm run build, portable EXE,
+        # compact ZIP with byte-identical EXE, and unpacked fallback ZIP.
+        run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify portable EXE, ZIP startup and exact runtime payload in private paths
+        run: |
+          node scripts/verify-windows-package.cjs | Tee-Object -FilePath out/windows-managed-package.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Include exact committed corresponding source
+        run: node scripts/pack-source.cjs
+      - name: Audit source members, secrets, committed identity and clean rebuild
+        # .github workflows, docs and tests are committed source members;
+        # the audit rejects credentials, keys and generated/cache directories.
+        run: node scripts/verify-source-archive.cjs
+      - name: Write SHA-256 for exact delivery files
+        run: |
+          $version = '${{ steps.metadata.outputs.version }}'
+          $names = @("KAMUCL-$version.exe", "KAMUCL-$version-windows-x64.zip", "KAMUCL-$version-windows-x64-unpacked.zip", "KAMUCL-$version-source.zip")
+          $lines = foreach ($name in $names) {
+            $file = Join-Path release $name
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing delivery file: $name" }
+            $digest = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$digest  $name"
+          }
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          Get-Content release/SHA256SUMS.txt
+      - name: Upload validated CI artifacts, not a GitHub Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: KAMUCL-${{ steps.metadata.outputs.version }}-windows-managed
+          path: |
+            release/KAMUCL-*.exe
+            release/KAMUCL-*-windows-x64.zip
+            release/KAMUCL-*-windows-x64-unpacked.zip
+            release/KAMUCL-*-source.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve native package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-managed-package-diagnostics
+          path: |
+            out/windows-package-*.json
+            out/windows-managed-package.log
+            out/source-audit-*.json
+            out/source-audit-*.log
+          if-no-files-found: ignore

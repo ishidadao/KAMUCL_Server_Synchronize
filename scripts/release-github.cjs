@@ -17,7 +17,8 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 
-const REPO = 'kamubaba-i/KAMUCL'
+// Fork releases must never overwrite upstream assets or tags.
+const REPO = 'ishidadao/KAMUCL_Update'
 const root = path.join(__dirname, '..')
 const pkg = require(path.join(root, 'package.json'))
 const version = pkg.version
@@ -132,11 +133,11 @@ async function main() {
     process.exit(1)
   }
 
-  // Bind both draft creation and publication to the reviewed master commit.
+  // Bind both draft creation and publication to the reviewed fork main commit.
   // GitHub may otherwise leave a published draft on an untagged-* reference.
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-  const masterResponse = await api('GET', `https://api.github.com/repos/${REPO}/branches/master`, token)
-  if (!masterResponse.ok || (await masterResponse.json()).commit?.sha !== commit) throw new Error('本地 HEAD 尚未同步到 origin/master，停止发布')
+  const mainResponse = await api('GET', `https://api.github.com/repos/${REPO}/branches/main`, token)
+  if (!mainResponse.ok || (await mainResponse.json()).commit?.sha !== commit) throw new Error('本地 HEAD 尚未同步到 origin/main，停止发布')
   const existingTag = await taggedCommit(token)
   if (existingTag && existingTag !== commit) throw new Error('版本标签已指向其他提交，保留远端标签并停止发布')
   const binding = { tag_name: tag, target_commitish: commit, name: `KAMUCL ${tag}`, body, prerelease: false }
@@ -215,8 +216,8 @@ async function main() {
   if (!publicResponse.ok) throw new Error(`公开标签无法读取：HTTP ${publicResponse.status}`)
   const publicRelease = await publicResponse.json()
   assertRemotePlatformScope(publicRelease.assets, version, options.platform)
-  if (publicRelease.id !== release.id || publicRelease.draft || publicRelease.tag_name !== tag || publicRelease.target_commitish !== commit) throw new Error('公开 Release 与已验证标签或 master 提交不一致')
-  if (await taggedCommit(token) !== commit) throw new Error('公开版本标签未指向已验证 master 提交')
+  if (publicRelease.id !== release.id || publicRelease.draft || publicRelease.tag_name !== tag || publicRelease.target_commitish !== commit) throw new Error('公开 Release 与已验证标签或 main 提交不一致')
+  if (await taggedCommit(token) !== commit) throw new Error('公开版本标签未指向已验证 main 提交')
   console.log(`\n全部附件大小与 SHA256 已核对，发布完成：https://github.com/${REPO}/releases/tag/${tag}`)
 }
 

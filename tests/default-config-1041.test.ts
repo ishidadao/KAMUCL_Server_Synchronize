@@ -19,7 +19,7 @@ async function runtime(t: any, env: Record<string, string> = {}, platform = proc
   const fakeProcess = { ...process, platform, arch, env: fixtureEnv }
   new Function('require','module','exports','process',await code)(
     (name: string) => name === 'electron' ? { app: { isPackaged: true, getPath: () => root, getVersion: () => '1.0.41', getName: () => 'test' } }
-      : name === 'undici' ? { ...require(name), fetch: async (url: string) => { requested.push(String(url)); return Response.json({ tag_name: 'v1.0.30', assets: [{ name: 'KAMUCL-1.0.30.exe', size: 123, browser_download_url: 'https://github.com/kamubaba-i/KAMUCL/releases/download/v1.0.30/KAMUCL-1.0.30.exe' }] }) } }
+      : name === 'undici' ? { ...require(name), fetch: async (url: string) => { requested.push(String(url)); return Response.json({ tag_name: 'v1.0.30', assets: [{ name: 'KAMUCL-1.0.30.exe', size: 123, browser_download_url: 'https://github.com/ishidadao/KAMUCL_Update/releases/download/v1.0.30/KAMUCL-1.0.30.exe' }] }) } }
       : require(name), mod, mod.exports, fakeProcess)
   return { root, api: mod.exports, requested, fixtureEnv }
 }
@@ -162,11 +162,12 @@ test('Windows packaged updates ignore test overrides and reject local v99 pendin
   assert.equal(api.getPendingUpdate(), null); assert(fs.existsSync(file)); assert(fs.readdirSync(root).some(f => f.startsWith('pending-update.json.rejected-')))
   fs.writeFileSync(path.join(root, 'update-check-cache.json'), JSON.stringify({ checkedAt: Date.now(), latest: release }))
   const checked = await api.checkLatest(false)
-  assert.equal(checked.hasUpdate, false); assert.equal(checked.release.version, '1.0.30'); assert(requested.every(u => u.startsWith('https://api.github.com/')))
-  const official = { ...release, version: '1.0.42', assetName: 'KAMUCL-1.0.42.exe', assetUrl: 'https://github.com/kamubaba-i/KAMUCL/releases/download/v1.0.42/KAMUCL-1.0.42.exe' }
+  assert.equal(checked.hasUpdate, false); assert.equal(checked.release.version, '1.0.30'); assert(requested.every(u => u.startsWith('https://api.github.com/repos/ishidadao/KAMUCL_Update/')))
+  const official = { ...release, version: '1.0.42', assetName: 'KAMUCL-1.0.42.exe', assetUrl: 'https://github.com/ishidadao/KAMUCL_Update/releases/download/v1.0.42/KAMUCL-1.0.42.exe' }
   const officialFile = path.join(root, official.assetName); fs.writeFileSync(officialFile, 'fixture')
   fs.writeFileSync(path.join(root, 'pending-update.json'), JSON.stringify({ release: official, file: officialFile }))
   assert.equal(api.getPendingUpdate().release.version, '1.0.42')
+  assert.equal(api.trustedUpdateRelease({ ...official, assetUrl: official.assetUrl.replace('ishidadao/KAMUCL_Update', 'kamubaba-i/KAMUCL') }), false, 'upstream builds cannot replace the customized fork')
   assert.equal(api.trustedUpdateRelease({ ...official, assetUrl: official.assetUrl.replace('/v1.0.42/', '/v1.0.30/') }), false)
 })
 

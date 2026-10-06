@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "clientPrepared": true,
+  "clientRoot": "./client-ready",
+  "outputRoot": "/var/www/kamucl-sync",
+  "privateKey": "./private/managed-signing-key.pem",
+  "publicBaseUrl": "https://mc.example.com/managed/",
+  "serverAddress": "mc.example.com:25565",
+  "packId": "my-server",
+  "packName": "My reviewed Minecraft client",
+  "packVersion": "1.0.0",
+  "minecraft": "1.20.1",
+  "loader": { "type": "forge", "version": "47.4.12" },
+  "allowRoots": ["mods", "config", "defaultconfigs", "kubejs", "emotes", "resourcepacks", "shaderpacks"],
+  "exclude": ["**/.DS_Store", "**/*.download", "**/*.lock", "config/touhou_little_maid/sites/**", "config/netmusic-spotify-audio-bridge.properties"],
+  "removeFiles": []
+}

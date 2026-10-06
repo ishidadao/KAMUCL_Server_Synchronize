@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          BASE="https://github.com/kamubaba-i/KAMUCL/releases/download/v${VERSION}"
+          BASE="https://github.com/ishidadao/KAMUCL_Update/releases/download/v${VERSION}"
           ZIP="KAMUCL-${VERSION}-mac-${ARCH}.zip"
           mkdir -p release "$RUNNER_TEMP/dmg-stage" "$RUNNER_TEMP/dmg-mount"
           curl --fail --location --retry 3 "$BASE/$ZIP" -o "$ZIP"
