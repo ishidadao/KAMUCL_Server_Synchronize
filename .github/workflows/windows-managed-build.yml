@@ -104,6 +104,7 @@ jobs:
             out/windows-managed-package.log
             out/windows-managed-tests.log
             out/qa-entry-proof-win32-*/**
+            out/bridge-exit-*.json
             out/source-audit-*.json
             out/source-audit-*.log
           if-no-files-found: ignore

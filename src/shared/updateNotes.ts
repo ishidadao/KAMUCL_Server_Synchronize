@@ -8,6 +8,10 @@ export interface UpdateNote {
 
 /** 按版本倒序；latest 为当前版本 */
 export const updateNotes: UpdateNote[] = [
+  { version: '1.1.19', date: '2026-10-07 07:44', changes: [
+    '修复：Bridge 验收不再把中文路径直接交给 Windows Java 17 的原生命令行解码，仍在真实中文路径加载桥接 JAR 并验证保存、正常退出和文件释放',
+    '验证：保留正常与半截请求的真实 JVM 退出门槛，记录加载来源和失败诊断；不调整玩家 Java、游戏配置或发行许可门禁'
+  ] },
   { version: '1.1.18', date: '2026-10-07 07:31', changes: [
     '修复：Windows 签名发布器避免跨 PowerShell 版本的权限模块自动加载冲突，保留私有目录、密钥和发布时 ACL 校验',
     '验证：独立 Electron 入口探针等待正常退出生命周期及零退出码，保留真实运行时与入口校验，失败保存本地退出和崩溃诊断',
