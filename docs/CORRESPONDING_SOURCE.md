@@ -14,6 +14,8 @@ Windows CI 的每次构建对应其实际 Git 提交；CI 产物不等同于正�
 6. 在 Windows x64 上运行 `npm run dist:win`，生成便携 EXE、内含相同 EXE 的紧凑 ZIP 和直接解压的备用 ZIP。本批运行库为 Electron 44.3.0；`.github/workflows/windows-managed-build.yml` 记录对应 Windows 构建、许可检查、启动探测及 SHA-256 步骤。
 7. 提交完整、干净的源码后，运行 `node scripts/pack-source.cjs`，从实际 Git 提交生成含逐文件哈希的源码包。Windows CI 还运行 `node scripts/verify-source-archive.cjs`，检查成员、凭据模式、实际提交身份并在独立解压目录重新构建，需额外空间及网络。该源码包包含已提交的工作流、文档和测试，不包含 `.git` 登录状态或生成的产物。
 
+源码归档唯一的历史证据排除规则是 `docs/validation-<数字版本号>/evidence/**`（例如 `docs/validation-1.1.15/evidence/`）：这些目录存放生成的验收产物，不是重新构建输入，仍完整保留在 Git 中。`SOURCE-MANIFEST.json` 的 `excludedNonBuildFiles` 列出该提交中每一个被排除的路径，审计要求与提交中的规则结果逐项一致。其他源码、资产、脚本、测试、许可和文档不因这个规则被排除；排除目录中已跟踪文件的未提交改动同样会使打包失败。审计仍拒绝源码包中的缓存、产物目录及潜在凭据，并核对其余文件的原始 Git 字节后进行干净重建。
+
 macOS 与 Linux 保留现有原生构建脚本及工作流；本批不把 Windows CI 构建成功作为这些平台的原生验收。修改后的应用可自行编译及 ad-hoc 签名，无需 KAMUCL 私有签名密钥。
 
 ## 本分支服务器同步改动

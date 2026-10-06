@@ -49,7 +49,7 @@ node /opt/kamucl-publisher/managed-publisher.cjs init --config /srv/kamucl-sync/
 - 已整理的客户端目录、独立的发布输出目录和私钥路径。
 - 允许分发的根目录和额外排除规则；确认客户端目录确实已去除服务器专用内容。
 
-路径按配置文件所在目录解析，Linux、macOS 和 Windows 都可使用。实际字段、Windows 写法、Caddy 权限及故障处理见 [发布器部署指南](publisher/README.md)。
+路径按配置文件所在目录解析，Linux、macOS 和 Windows 都可使用。配置、私钥、客户端材料和公开目录及其祖先必须是真实目录，不能经由符号链接或 Windows junction。macOS 的 `/var` 和 `/tmp` 通常是别名，请使用真实的 `/private/var`、`/private/tmp` 或用户目录。实际字段、Windows 写法、Caddy 权限及故障处理见 [发布器部署指南](publisher/README.md)。
 
 例如，审核完成后可使用以下配置（域名、目录和版本必须替换成自己的实际值）：
 
@@ -97,6 +97,15 @@ curl --fail https://mc.example.com/managed/manifest.json
 先确认 `validate` 成功，再重载；`curl` 地址应替换为实际域名、HTTPS 端口和发布路径。路由行为可查阅 [Caddy 官方 handle 说明](https://caddyserver.com/docs/caddyfile/directives/handle) 和 [静态文件服务说明](https://caddyserver.com/docs/caddyfile/directives/file_server)。
 
 发布后分别检查标准发现文档、清单和其中一个内容对象可通过 HTTPS 访问，并让测试玩家核对公钥指纹、完成同步和登录。不要仅凭发布命令成功就认为客户端能加入；需验证客户端专用配置、必要资源和握手兼容性。
+
+`manifest.json` 是签名信封，不是直接的文件列表。在发布主机上可读取仅供本地排查的 `manifest.payload.json` 取出首个对象地址（空包无对象可测），然后检查下载；无需在 Caddy 中公开这个辅助文件：
+
+```bash
+object_url="$(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("/var/www/kamucl-sync/manifest.payload.json","utf8")); if(!p.files.length) throw Error("No content objects"); console.log(p.files[0].url)')"
+curl --fail --output /dev/null "$object_url"
+```
+
+应使用实际的 `outputRoot` 路径。HTTPS 可达只是连通性验收，签名及对象 SHA-256 仍由启动器完整校验。
 
 ### 后续更新与保留规则
 

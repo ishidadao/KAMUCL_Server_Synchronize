@@ -14,6 +14,8 @@ node /opt/kamucl-publisher/managed-publisher.cjs init --config /srv/kamucl-sync/
 
 编辑生成的配置，参照 [config.example.json](config.example.json)：填写准确的 `minecraft`、`loader.type`、`loader.version`、`packId`、`packName`、`packVersion`、`serverAddress`、`publicBaseUrl`。所有本地相对路径以**配置文件所在目录**解析，不依赖运行命令的当前目录。`publicBaseUrl` 必须是与游戏地址相同主机的有效 HTTPS 地址，例如 `https://mc.example.com/managed/` 或 `https://mc.example.com:4443/managed/`；这里的 HTTPS 端口不是 Minecraft 的 TCP 25565 端口。
 
+配置目录、私钥、客户端材料、输出目录以及它们的所有祖先必须是真实目录，不允许符号链接或 Windows junction；即使链接目标在同一磁盘也会被拒绝。macOS 上 `/var`、`/tmp` 通常是链接，应使用实际的 `/private/var`、`/private/tmp` 或用户目录路径。不要通过放宽权限或关闭校验绕过这个限制。
+
 `client-ready` 只能包含独立的客户端材料：
 
 - 管理员判断哪些模组同时需要在客户端运行；保留必需的客户端专用模组，去掉仅服务端使用的模组。工具不凭 JAR 文件名推断兼容性。

@@ -20,7 +20,7 @@ function run(command,args){
 try{
  const zip=new Zip(archive),entries=zip.getEntries().filter(e=>!e.isDirectory),names=entries.map(e=>e.entryName)
  const manifest=JSON.parse(zip.readAsText('SOURCE-MANIFEST.json'))
- if(manifest.version!==version||!Array.isArray(manifest.files)||new Set(names).size!==names.length)throw Error('Invalid or duplicate source manifest')
+ if(manifest.version!==version||!Array.isArray(manifest.files)||!Array.isArray(manifest.excludedNonBuildFiles)||manifest.excludedNonBuildFiles.some(p=>typeof p!=='string')||new Set(manifest.excludedNonBuildFiles).size!==manifest.excludedNonBuildFiles.length||new Set(names).size!==names.length)throw Error('Invalid or duplicate source manifest')
  const listed=new Set(manifest.files.map(e=>e.path))
  if(listed.size!==manifest.files.length||names.length!==listed.size+1||names.some(n=>n!=='SOURCE-MANIFEST.json'&&!listed.has(n)))throw Error('Unexpected source members')
  const forbiddenDirs=new Set(['.git','node_modules','out','release','.cache','.ssh','素材'])
@@ -36,9 +36,10 @@ try{
  }
  const committed=require('./committed-source.cjs').readCommittedSource(root)
  if(manifest.commit!==committed.commit||manifest.representation!=='raw-git-blobs')throw Error('Source archive must identify exact committed Git blobs')
+ if(JSON.stringify(manifest.excludedNonBuildFiles)!==JSON.stringify(committed.excludedNonBuildFiles))throw Error('Source archive exclusions do not match the exact committed non-build evidence policy')
  if(committed.files.length!==listed.size||committed.files.some(f=>!listed.has(f.path)))throw Error('Source archive does not match committed build inputs')
  for(const item of committed.files)if(!zip.readFile(item.path)?.equals(item.bytes))throw Error('Archive differs from the committed Git blob: '+item.path)
- Object.assign(proof,{archiveSHA256:sha(fs.readFileSync(archive)),commit:committed.commit,files:listed.size,membershipAndHashes:true,rawGitBlobIdentity:true,representation:manifest.representation})
+ Object.assign(proof,{archiveSHA256:sha(fs.readFileSync(archive)),commit:committed.commit,files:listed.size,excludedNonBuildFiles:committed.excludedNonBuildFiles,membershipAndHashes:true,rawGitBlobIdentity:true,representation:manifest.representation})
  fs.mkdirSync(directory,{recursive:true});zip.extractAllTo(directory,false);save()
  run('npm',['ci']);run('node',['scripts/build-bridge.cjs']);run('npx',['tsc','--noEmit']);run('npm',['run','build']);run('node',['scripts/check-licenses.cjs'])
  for(const item of manifest.files)if(sha(fs.readFileSync(path.join(directory,item.path)))!==item.sha256)throw Error('Build modified source: '+item.path)

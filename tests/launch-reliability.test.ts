@@ -10,7 +10,9 @@ import { versionInstallHarness } from './helpers/version-install-harness'
 import { invalidLaunchArtifact, ensureLaunchArtifact } from '../src/main/core/launchIntegrity'
 import { ExitJournal } from '../src/main/core/exitJournal'
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'kamucl-reliability-'))
+// Windows runners may expose an 8.3 alias (RUNNER~1) through TEMP. Production
+// normalizes configured folders, so fixtures must use that same filesystem path.
+const temp = () => fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'kamucl-reliability-'))
 const sha1 = (b: Buffer) => crypto.createHash('sha1').update(b).digest('hex')
 
 test('Maven conflict identity selects child version while preserving classifiers/types and OS rules', async () => {

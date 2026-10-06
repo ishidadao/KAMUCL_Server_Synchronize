@@ -6,6 +6,8 @@ import { verifyFile, downloadFile, type MirrorPref } from './download'
 export interface LaunchArtifact { dest: string; url?: string; sha1?: string; size?: number }
 // Only successful checks are reused, within this launcher process. Any changed
 // inode, size, mtime, ctime or expected digest forces a full check again.
+// Windows can preserve all of these within a same-size overwrite timestamp
+// tick, so it always re-reads the actual digest/JAR contents instead.
 const verifiedArtifacts = new Map<string, { signature: string; expires: number }>()
 async function artifactSignature(file: LaunchArtifact): Promise<string | null> {
   try {
@@ -17,7 +19,7 @@ async function artifactSignature(file: LaunchArtifact): Promise<string | null> {
 export async function invalidLaunchArtifact(file: LaunchArtifact): Promise<string | null> {
   const key = path.resolve(file.dest), before = await artifactSignature(file)
   const cached = verifiedArtifacts.get(key)
-  if (before && cached?.signature === before && cached.expires > Date.now()) return null
+  if (process.platform !== 'win32' && before && cached?.signature === before && cached.expires > Date.now()) return null
   verifiedArtifacts.delete(key)
   const reason = await verifyFile(file.dest, file)
   if (reason) return reason
@@ -25,8 +27,10 @@ export async function invalidLaunchArtifact(file: LaunchArtifact): Promise<strin
     try { if (!new AdmZip(file.dest).test()) return 'JAR 内容校验失败' } catch { return 'JAR 格式损坏' }
   }
   if (before && before === await artifactSignature(file)) {
-    if (verifiedArtifacts.size >= 8192) verifiedArtifacts.delete(verifiedArtifacts.keys().next().value!)
-    verifiedArtifacts.set(key, { signature: before, expires: Date.now() + 5 * 60_000 })
+    if (process.platform !== 'win32') {
+      if (verifiedArtifacts.size >= 8192) verifiedArtifacts.delete(verifiedArtifacts.keys().next().value!)
+      verifiedArtifacts.set(key, { signature: before, expires: Date.now() + 5 * 60_000 })
+    }
     return null
   }
   return '文件在完整性校验期间发生变化，请重试'

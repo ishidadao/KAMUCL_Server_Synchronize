@@ -8,7 +8,9 @@ import { createRequire } from 'node:module'
 import { analyzeDiagnosticText } from '../src/main/core/diagnosticRules'
 import { selectDiagnosticSession } from '../src/main/core/diagnosticSession'
 async function harness(){
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'kamucl-center-')),folder=path.join(root,'game'),other=path.join(root,'other'),user=path.join(root,'user')
+ // Use the canonical parent, not the Windows runner's RUNNER~1 TEMP alias:
+ // configured folders and path-keyed lock/backup stores resolve the real path.
+ const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'kamucl-center-')),folder=path.join(root,'game'),other=path.join(root,'other'),user=path.join(root,'user')
  for(const d of [folder,other,user])fs.mkdirSync(d,{recursive:true})
  const dir=path.join(folder,'versions','source');fs.mkdirSync(path.join(dir,'mods'),{recursive:true});fs.mkdirSync(path.join(dir,'saves','world'),{recursive:true})
  fs.writeFileSync(path.join(dir,'source.json'),JSON.stringify({id:'source',_gameDir:true,_mcVersion:'1.21.1',mainClass:'net.minecraft.client.Main',downloads:{client:{url:'https://example.invalid/client.jar'}}}))

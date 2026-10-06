@@ -142,14 +142,26 @@ async function readBounded(filename, limit) {
   }
   finally { await handle.close() }
 }
+/** Fixed script, encoded UTF-16LE: file paths are data in the child environment. */
+function windowsPrivateAcl(filename, initialize = false, isDirectory = false, runner = spawnSync) {
+  const setup = "$ErrorActionPreference='Stop'; $taskUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $taskAllowed=@($taskUser.Value,'S-1-5-18','S-1-5-32-544'); "
+  const script = setup + (initialize
+    ? "$taskAcl=" + (isDirectory ? '[System.Security.AccessControl.DirectorySecurity]' : '[System.Security.AccessControl.FileSecurity]') + "::new(); $taskAcl.SetOwner($taskUser); $taskAcl.SetAccessRuleProtection($true,$false); foreach($taskSid in $taskAllowed) { $taskIdentity=[System.Security.Principal.SecurityIdentifier]::new($taskSid); $taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::FullControl,[System.Security.AccessControl.AccessControlType]::Allow); " + (isDirectory
+      ? "$taskRule=[System.Security.AccessControl.FileSystemAccessRule]::new($taskIdentity,[System.Security.AccessControl.FileSystemRights]::FullControl,[System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',[System.Security.AccessControl.PropagationFlags]::None,[System.Security.AccessControl.AccessControlType]::Allow); " : '') + "$taskAcl.AddAccessRule($taskRule) }; Set-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK -AclObject $taskAcl; "
+    : '') + "$taskActual=Get-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK; $taskBad=$taskActual.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $taskAllowed -notcontains $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }; if($taskBad){throw 'Untrusted principal is allowed to access this private path'}"
+  const result = runner('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+    windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024, env: { ...process.env, KAMUCL_PRIVATE_KEY_CHECK: filename }, encoding: 'utf8'
+  })
+  if (result.error || result.status !== 0) {
+    const detail = String(result.error?.message || result.stderr || 'PowerShell returned ' + result.status)
+      .split(filename).join('<private-path>').replace(/[\r\n\x00-\x1f]+/g, ' ').slice(0, 1200)
+    throw new Error((initialize ? 'Unable to create private Windows ACL' : 'Signing key ACL must allow only this user, Administrators and SYSTEM') + ': ' + detail)
+  }
+}
 async function keyData(filename) {
   const item = await stat(filename)
   if (!item || item.isSymbolicLink() || !item.isFile() || (process.platform !== 'win32' && (item.mode & 0o077))) throw new Error('Signing key must be a private regular file (chmod 600)')
-  if (process.platform === 'win32') {
-    const script = "$ErrorActionPreference='Stop'; $allowed=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544'); $bad=(Get-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $allowed -notcontains $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }; if($bad){exit 1}"
-    const checked = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000, env: { ...process.env, KAMUCL_PRIVATE_KEY_CHECK: filename }, encoding: 'utf8' })
-    if (checked.status !== 0) throw new Error('Signing key ACL must allow only this user, Administrators and SYSTEM')
-  }
+  if (process.platform === 'win32') windowsPrivateAcl(filename)
   const privateKey = crypto.createPrivateKey(await readBounded(filename, 64 * 1024))
   if (privateKey.asymmetricKeyType !== 'rsa' || (privateKey.asymmetricKeyDetails.modulusLength ?? 0) < 3072 || privateKey.asymmetricKeyDetails.modulusLength > 8192) throw new Error('Signing key must be RSA 3072–8192 bits')
   const publicKey = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString()
@@ -304,17 +316,16 @@ async function initConfig(configPath) {
   await directory(base, true)
   if (await stat(filename) || await stat(keyFile)) throw new Error('Init never overwrites an existing config or signing key')
   await directory(privateDirectory, true)
+  // Restrict the directory before generating a key, including its inheritance.
+  if (process.platform === 'win32') windowsPrivateAcl(privateDirectory, true, true)
   const key = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 }).privateKey.export({ type: 'pkcs8', format: 'pem' })
   const config = { schema: 1, clientPrepared: false, clientRoot: './client-ready', outputRoot: './public', privateKey: './private/managed-signing-key.pem', publicBaseUrl: 'https://mc.example.com/managed/', serverAddress: 'mc.example.com:25565', packId: 'my-server', packName: 'My reviewed server client', packVersion: 'REPLACE_ME', minecraft: 'REPLACE_ME', loader: { type: 'forge', version: 'REPLACE_ME' }, allowRoots: ROOTS, exclude: ['**/.DS_Store', '**/*.download', '**/*.lock', 'config/touhou_little_maid/sites/**', 'config/netmusic-spotify-audio-bridge.properties'], removeFiles: [] }
   const keyHandle = await fsp.open(keyFile, 'wx', 0o600)
   try { await keyHandle.writeFile(key); await keyHandle.sync() } finally { await keyHandle.close() }
-  if (process.platform === 'win32') {
-    const script = "$ErrorActionPreference='Stop'; $user=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object Security.AccessControl.FileSecurity; $acl.SetOwner($user); $acl.SetAccessRuleProtection($true,$false); foreach($sid in @($user.Value,'S-1-5-18','S-1-5-32-544')) { $id=New-Object Security.Principal.SecurityIdentifier($sid); $rule=New-Object Security.AccessControl.FileSystemAccessRule($id,'FullControl','Allow'); $acl.AddAccessRule($rule) }; Set-Acl -LiteralPath $env:KAMUCL_PRIVATE_KEY_CHECK -AclObject $acl"
-    const restricted = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000, env: { ...process.env, KAMUCL_PRIVATE_KEY_CHECK: keyFile }, encoding: 'utf8' })
-    if (restricted.status !== 0) throw new Error('Unable to create private Windows signing-key ACL; keep the key private and repair ACL before publishing')
-  }
+  if (process.platform === 'win32') windowsPrivateAcl(keyFile, true)
   const configHandle = await fsp.open(filename, 'wx', 0o600)
   try { await configHandle.writeFile(JSON.stringify(config, null, 2) + '\n'); await configHandle.sync() } finally { await configHandle.close() }
+  if (process.platform === 'win32') windowsPrivateAcl(filename, true)
   return { config: filename, privateKeyCreated: true }
 }
 async function main(args = process.argv.slice(2)) {
@@ -322,5 +333,5 @@ async function main(args = process.argv.slice(2)) {
   const result = args[0] === 'init' ? await initConfig(args[2]) : await publish(args[2])
   console.log(JSON.stringify(result))
 }
-module.exports = { initConfig, publish, validateConfig, normalizeManagedPath, checkCasePath, address, glob, main }
+module.exports = { initConfig, publish, validateConfig, normalizeManagedPath, checkCasePath, address, glob, windowsPrivateAcl, main }
 if (require.main === module) main().catch(error => { console.error('Publisher failed: ' + error.message); process.exitCode = 1 })

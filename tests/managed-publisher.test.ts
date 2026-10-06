@@ -16,8 +16,33 @@ const publisher = require('../publisher/managed-publisher.cjs') as {
   checkCasePath(value: string, identities: Map<string, { spelling: string; leaf: boolean }>, leaf?: boolean): void
   glob(pattern: string): RegExp
   address(value: string): string
+  windowsPrivateAcl(filename: string, initialize?: boolean, isDirectory?: boolean, runner?: (...args: any[]) => any): void
 }
 const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex')
+
+test('managed publisher: Windows ACL commands use fixed encoded scripts, protect inheritance and keep paths out of command text', () => {
+  const filename = 'C:/private/Unicode 中文; not code/key.pem', calls: any[] = []
+  const runner = (...args: any[]) => { calls.push(args); return { status: 0 } }
+  publisher.windowsPrivateAcl(filename, true, true, runner)
+  publisher.windowsPrivateAcl(filename, true, false, runner)
+  publisher.windowsPrivateAcl(filename, false, false, runner)
+  for (const [command, args, options] of calls) {
+    assert.equal(command, 'powershell.exe'); assert.equal(args[3], '-EncodedCommand')
+    const script = Buffer.from(args[4], 'base64').toString('utf16le')
+    assert(!script.includes(filename)); assert.equal(options.env.KAMUCL_PRIVATE_KEY_CHECK, filename)
+    assert.match(script, /Get-Acl -LiteralPath \$env:KAMUCL_PRIVATE_KEY_CHECK/)
+    assert.match(script, /Untrusted principal/)
+    assert.equal(options.timeout, 10000); assert.equal(options.maxBuffer, 64 * 1024)
+  }
+  const directoryScript = Buffer.from(calls[0][1][4], 'base64').toString('utf16le')
+  assert.match(directoryScript, /DirectorySecurity\]::new/)
+  assert.match(directoryScript, /SetAccessRuleProtection\(\$true,\$false\)/)
+  assert.match(directoryScript, /ContainerInherit,ObjectInherit/)
+  assert.throws(() => publisher.windowsPrivateAcl(filename, true, false, () => ({ status: 1, stderr: filename + '\n denied' })), error => {
+    assert.match(String(error), /Unable to create private Windows ACL/); assert(!String(error).includes(filename)); return true
+  })
+  assert.throws(() => publisher.windowsPrivateAcl(filename, false, false, () => ({ status: 1, stderr: 'denied' })), /Signing key ACL must allow only/)
+})
 
 async function fixture() {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'kamucl-publisher-test-')))

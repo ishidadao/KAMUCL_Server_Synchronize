@@ -10,12 +10,21 @@ import { spawn } from 'node:child_process'
 const requireFixture = createRequire(path.resolve('package.json'))
 const { ROUTES, THEMES, LAYOUTS, ROUTE_COMPONENTS, assertNavigationCoverage, assertQueueLedger, publicAccount, stableHash, createQueueClickObserver, createInstallHandlerObserver, restoreInstallHandlerObserver, preserveInstallObservation, collectAndRestoreInstallObserver, preservePrimaryFailure, assertMatchingDownloadResponse, assertDownloadTargetSelection } = requireFixture('./scripts/verify-mac-parity-ui.cjs')
 const { parityRoot, assertRestartIdentity, assertNaturalOwnedClose, safeEvidence } = requireFixture('./scripts/verify-mac-parity.cjs')
+// Checkout line endings are not part of the cleanup/ownership contract. Keep
+// the structural assertions identical for the committed LF and Windows CRLF.
+const sourceText = (filename: string) => fs.readFileSync(path.resolve(filename), 'utf8').replace(/\r\n/g, '\n')
 function temporary(t: TestContext) {
   const base = fs.realpathSync.native(os.tmpdir()), root = fs.realpathSync.native(fs.mkdtempSync(path.join(base, 'KAMUCL synthetic Mac parity contract ')))
   assert(root.startsWith(base + path.sep))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   return root
 }
+test('Mac structural source assertions read identical source for LF and Windows CRLF checkouts', t => {
+  const root = temporary(t), filename = path.join(root, 'windows-checkout.cjs')
+  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
+  fs.writeFileSync(filename, source.replace(/\n/g, '\r\n'))
+  assert.equal(sourceText(filename), source)
+})
 function navigation() {
   return THEMES.flatMap((theme: string) => LAYOUTS.flatMap(([width, height, zoom]: number[]) => ROUTES.map((route: string) => ({
     theme, width, height, zoom, route, selectedRoute: route, actualTheme: theme, component: ROUTE_COMPONENTS[route], componentChain: ['ChildWidget', ROUTE_COMPONENTS[route], 'AsyncComponentWrapper'],
@@ -209,7 +218,7 @@ test('Mac outer failure receipt writer cannot replace the original nonzero asser
   assert.equal(preservePrimaryFailure(proof, primary, () => { throw writer }), primary)
   assert.equal(proof.error.message, primary.message)
   assert.deepEqual(proof.diagnosticErrors, [{ stage: 'primary failure receipt', name: writer.name, message: writer.message }])
-  const source = fs.readFileSync(path.resolve('scripts/verify-mac-parity-ui.cjs'), 'utf8')
+  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
   assert.match(source, /\},\(\)=>collectAndRestoreInstallObserver\(main,proof\.realService\),proof\.realService,save\)/, 'the actual cleanup callback uses the tested trace-read-independent restoration entry')
   assert.match(source, /catch\(error\)\{preservePrimaryFailure\(proof,error,save\);try\{await screenshot/, 'the actual outer catch uses the tested primary-preserving writer')
 })
@@ -223,7 +232,7 @@ test('Mac registered install observation enters finally protection before its fi
   await assert.rejects(preserveInstallObservation(async () => { throw writer }, () => collectAndRestoreInstallObserver(main, receipt), receipt, () => { throw writer }), error => error === writer)
   assert.equal(entries.get('mods:prepare'), original); assert.equal(mainCalls.length, 2); assert.equal(receipt.handlerRestoration.complete, true)
   assert.equal(receipt.primaryError.message, writer.message)
-  const source = fs.readFileSync(path.resolve('scripts/verify-mac-parity-ui.cjs'), 'utf8')
+  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
   assert.match(source, /handlerRegistration=await main\([^\n]+\)\n\s+await preserveInstallObservation\(async\(\)=>\{\n\s+save\(\)/, 'first registered checkpoint belongs to the protected actual operation')
 })
 
@@ -282,7 +291,7 @@ test('Mac public file and install observations remain exact-once with all three 
   assert.deepEqual(invocations, [{ channel: 'community:files', args: fixture.call.arguments }], 'rejected stale rows cannot reach the actual prepare or commit')
   assert.equal(receipt.handlerRestoration.complete, true)
   for (const [channel, original] of originals) assert.equal(entries.get(channel), original)
-  const source = fs.readFileSync(path.resolve('scripts/verify-mac-parity-ui.cjs'), 'utf8')
+  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
   assert.match(source, /\['community:files','mods:prepare','mods:commit'\]/)
   assert(source.indexOf('await preserveInstallObservation(async()=>{') < source.indexOf("await type('.download-modal input[list="), 'all filtering and selection starts within finally protection')
 })
