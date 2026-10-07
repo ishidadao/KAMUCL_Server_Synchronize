@@ -12,7 +12,7 @@ const zipFile = `release/KAMUCL-${version}-windows-x64.zip`
 const zip = new Zip(zipFile), name = path.basename(packageFile)
 assert.equal(zip.getEntry(name).header.method, 0, 'EXE must use standard ZIP Store')
 assert.equal(hash(zip.readFile(name)), hash(fs.readFileSync(packageFile)))
-const zipRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'KAMUCL ZIP 中文 '))
+const zipRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'KAMUCL ZIP verify '))
 // Exercise the Windows-supplied extractor as well as adm-zip reading above.
 const extract = spawnSync('tar', ['-xf', path.resolve(zipFile), '-C', zipRoot], { windowsHide: true, encoding: 'utf8' })
 assert.ifError(extract.error); assert.equal(extract.status, 0, extract.stderr)

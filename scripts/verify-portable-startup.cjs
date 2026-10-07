@@ -1,7 +1,7 @@
 // Real portable cold/warm startup; private paths, no launcher settings and no Minecraft process.
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process')
 const version=require('../package.json').version
-const root=fs.mkdtempSync(path.join(os.tmpdir(),'kamucl startup 中文-'))
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'kamucl startup verify-'))
 const exe=path.join(root,`KAMUCL ${version}.exe`)
 fs.copyFileSync(path.resolve(process.argv[2] || `release/KAMUCL-${version}.exe`),exe)
 const results=[]
