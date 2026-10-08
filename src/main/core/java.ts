@@ -896,15 +896,21 @@ export function requiredMajor(versionJson: VersionJson): number {
   return declaredOk ? Math.max(declaredOk, parsed) : parsed
 }
 
-/** 最低版本 + 向上兼容：在 64 位且 major >= need 的运行时中取最高主版本（不优先精确匹配）。 */
+/** 最低版本 + 向上兼容：need >= 17 时在 64 位且 major >= need 中取最高主版本；need < 17（Java 8/16）优先精确匹配，没有才退回最高 >= need。 */
 export function selectJavaByMajor<T extends { major: number; is64Bit: boolean; architecture?: string }>(available: T[], need: number, architecture?: string): T | null {
   const ok = available.filter((j) => j.major >= need && j.is64Bit && (!architecture || j.architecture === architecture))
-  return [...ok].sort((a, b) => b.major - a.major)[0] ?? null
+  if (!ok.length) return null
+  // 旧版（1.16.5 及更早需 8，1.17 需 16）钉在要求主版本，避免误选 21/25 启动失败。
+  if (need < 17) {
+    const exact = ok.find((j) => j.major === need)
+    if (exact) return exact
+  }
+  return [...ok].sort((a, b) => b.major - a.major)[0]
 }
 
 /**
- * 确保有可用 Java：最低版本 + 向上兼容——游戏要求 Java N 时，所有 ≥N 的已安装
- * Java 均可用，并选用其中最高主版本（装了 17 和 21 时用 21，而不是钉死 17）。
+ * 确保有可用 Java：need >= 17 时最低版本 + 向上兼容并取最高主版本（装了 17 和 21 时用 21）；
+ * need < 17（Java 8/16）优先精确匹配要求主版本，没有才退回更高版本。
  * 完整扫描本机后仍无满足条件的 Java 时，才从 Adoptium 下载 JRE 到 gameDir/runtimes/jre-<major>/。
  * Windows 为 zip（adm-zip 解压）；macOS/Linux 为 tar.gz（系统 tar 解压）。
  * 返回 java 可执行文件绝对路径。

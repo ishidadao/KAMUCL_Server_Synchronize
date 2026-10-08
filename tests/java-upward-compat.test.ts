@@ -6,9 +6,15 @@ import { selectJavaByMajor, requiredMajor } from '../src/main/core/java'
 const read = (file: string) => fs.readFileSync(file, 'utf8')
 const j = (major: number, is64Bit = true) => ({ major, is64Bit, path: `C:/Java/jdk-${major}/bin/java.exe`, version: String(major) })
 
-test('Java selection: minimum version + upward compatibility, highest major at or above need', () => {
+test('Java selection: pin exact for need < 17; highest >= need for 17+', () => {
   const system = [j(8), j(17), j(21), j(25)]
-  // 有 17 时也不钉死 17，取 >= need 的最高主版本
+  // 旧版需 Java 8：有 8 时钉死 8，不选 25
+  assert.equal(selectJavaByMajor(system, 8)?.major, 8)
+  // 1.17 需 16：有 16 时钉死 16
+  assert.equal(selectJavaByMajor([j(8), j(16), j(17), j(21)], 16)?.major, 16)
+  // 无精确 8 时才退回最高 >= 8
+  assert.equal(selectJavaByMajor([j(17), j(21)], 8)?.major, 21)
+  // need 17+：仍取 >= need 的最高主版本
   assert.equal(selectJavaByMajor(system, 17)?.major, 25)
   // 仅装 Java 21 无 Java 17：1.20.1（需 17）向上兼容选 21
   assert.equal(selectJavaByMajor([j(21)], 17)?.major, 21)
@@ -52,6 +58,7 @@ test('download prompt wording says "Java N or higher", actual pick is logged wit
   assert.match(java, /selectJavaByMajor/)
   // 日志记录实际选用的路径与版本
   assert.match(java, /向上兼容选用 Java \$\{local\.major\}（\$\{local\.version\}，64位）：\$\{local\.path\}/)
-  // 不再精确匹配
+  // 旧版精确钉死；现代版本仍可向上兼容（不再是唯一的 exact-match-only）
+  assert.match(java, /need < 17/)
   assert(!java.includes('j.major === need && j.is64Bit'), 'exact-match-only logic must be gone')
 })
