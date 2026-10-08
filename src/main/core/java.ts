@@ -860,35 +860,51 @@ export function hideJava(javaPath: string): void {
   saveSettings({ javaHidden: hidden })
 }
 
-/** 推断运行该版本所需的 Java 主版本号 */
-export function requiredMajor(versionJson: VersionJson): number {
-  const declared = versionJson.javaVersion?.majorVersion
-  if (declared && declared > 0) return declared
-  // 按 MC 版本号推断（id 形如 1.20.5 / 1.18 / 1.8.9；自定义命名的原版取 _mcVersion）
-  const verId = versionJson.inheritsFrom ?? versionJson._mcVersion ?? versionJson.id
-  const m = /^1\.(\d+)(?:\.(\d+))?/.exec(verId)
-  if (!m) {
-    // 非 1.x 命名（如 26.2 新版号、24w14a 快照）：均为现代版本，需 Java 21
-    return 21
+/**
+ * 从一条版本字符串推断 Java 主版本。
+ * 认得出的才返回数字：1.18–1.20.4 → 17，1.20.5+ → 21，1.17 → 16，更旧的 1.x → 8；
+ * 26.x 新版号与快照 → 21。实例显示名、加载器 id 等无法识别的字符串返回 null，避免被当成现代版本。
+ */
+function majorFromVersionId(verId: string | undefined): number | null {
+  if (!verId) return null
+  const release = /^1\.(\d+)(?:\.(\d+))?/.exec(verId)
+  if (release) {
+    const minor = parseInt(release[1], 10)
+    const patch = parseInt(release[2] ?? '0', 10)
+    if (minor > 20 || (minor === 20 && patch >= 5)) return 21
+    if (minor >= 18) return 17
+    if (minor === 17) return 16
+    return 8
   }
-  const minor = parseInt(m[1], 10)
-  const patch = parseInt(m[2] ?? '0', 10)
-  if (minor > 20 || (minor === 20 && patch >= 5)) return 21
-  if (minor >= 18) return 17
-  if (minor === 17) return 16
-  return 8
+  // 非 1.x 命名（如 26.2 新版号、24w14a 快照）：均为现代版本，需 Java 21
+  if (/^\d+\.\d+/.test(verId) || /^\d{2}w\d{2}[a-z]/i.test(verId)) return 21
+  return null
 }
 
-/** 最低版本 + 向上兼容选择：优先推荐版本（==need），否则取满足条件的最高版本（纯函数，可测试）。 */
+/** 推断运行该版本所需的 Java 主版本号。显式 javaVersion 只抬高需求，不能把已解析出版本的需求压低。 */
+export function requiredMajor(versionJson: VersionJson): number {
+  const candidates = [versionJson.inheritsFrom, versionJson._mcVersion, versionJson.id]
+  let parsed: number | null = null
+  for (const id of candidates) {
+    const major = majorFromVersionId(id)
+    if (major != null) { parsed = major; break }
+  }
+  const declared = versionJson.javaVersion?.majorVersion
+  const declaredOk = declared && declared > 0 ? declared : 0
+  // 显示名 / 加载器 id 无法解析时，保留 json 里写明的主版本；完全没有信息才按现代版本 Java 21。
+  if (parsed == null) return declaredOk || 21
+  return declaredOk ? Math.max(declaredOk, parsed) : parsed
+}
+
+/** 最低版本 + 向上兼容：在 64 位且 major >= need 的运行时中取最高主版本（不优先精确匹配）。 */
 export function selectJavaByMajor<T extends { major: number; is64Bit: boolean; architecture?: string }>(available: T[], need: number, architecture?: string): T | null {
   const ok = available.filter((j) => j.major >= need && j.is64Bit && (!architecture || j.architecture === architecture))
-  return ok.find((j) => j.major === need) ?? [...ok].sort((a, b) => b.major - a.major)[0] ?? null
+  return [...ok].sort((a, b) => b.major - a.major)[0] ?? null
 }
 
 /**
  * 确保有可用 Java：最低版本 + 向上兼容——游戏要求 Java N 时，所有 ≥N 的已安装
- * Java 均可用；优先推荐版本（==need），否则取满足条件的最高版本（如仅装 Java 21
- * 无 Java 17 时，1.20.1 直接用 Java 21 启动，与 PCL2/HMCL 一致）。
+ * Java 均可用，并选用其中最高主版本（装了 17 和 21 时用 21，而不是钉死 17）。
  * 完整扫描本机后仍无满足条件的 Java 时，才从 Adoptium 下载 JRE 到 gameDir/runtimes/jre-<major>/。
  * Windows 为 zip（adm-zip 解压）；macOS/Linux 为 tar.gz（系统 tar 解压）。
  * 返回 java 可执行文件绝对路径。
@@ -924,7 +940,7 @@ async function ensureJavaInternal(versionJson: VersionJson, emit: ProgressEmit):
   const local = await selectHealthyJava(await scanJavaForLaunch(), need, architecture)
   if (local) {
     if (local.major === need) javaLog.debug(`本机已有 Java ${need}（64位）：${local.path}`)
-    else javaLog.info(`本机没有 Java ${need}，向上兼容选用 Java ${local.major}（${local.version}，64位）：${local.path}`)
+    else javaLog.info(`向上兼容选用 Java ${local.major}（${local.version}，64位）：${local.path}`)
     return local.path
   }
   javaLog.info(`本机没有 Java ${need} 或更高版本（64位），开始从 Adoptium 自动下载`)

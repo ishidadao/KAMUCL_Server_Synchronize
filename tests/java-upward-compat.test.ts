@@ -6,13 +6,12 @@ import { selectJavaByMajor, requiredMajor } from '../src/main/core/java'
 const read = (file: string) => fs.readFileSync(file, 'utf8')
 const j = (major: number, is64Bit = true) => ({ major, is64Bit, path: `C:/Java/jdk-${major}/bin/java.exe`, version: String(major) })
 
-test('Java selection: minimum version + upward compatibility, prefer exact else highest available', () => {
+test('Java selection: minimum version + upward compatibility, highest major at or above need', () => {
   const system = [j(8), j(17), j(21), j(25)]
-  // 精确匹配优先
-  assert.equal(selectJavaByMajor(system, 17)?.major, 17)
-  // 仅装 Java 21 无 Java 17：1.20.1（需 17）向上兼容选 21——用户报告场景
+  // 有 17 时也不钉死 17，取 >= need 的最高主版本
+  assert.equal(selectJavaByMajor(system, 17)?.major, 25)
+  // 仅装 Java 21 无 Java 17：1.20.1（需 17）向上兼容选 21
   assert.equal(selectJavaByMajor([j(21)], 17)?.major, 21)
-  // 无精确时取满足条件的最高版本
   assert.equal(selectJavaByMajor([j(8), j(21), j(25)], 17)?.major, 25)
   // 32 位不满足
   assert.equal(selectJavaByMajor([{ ...j(21), is64Bit: false }], 17), null)
@@ -36,8 +35,15 @@ test('required major per MC version band: 1.8-1.16.5→8, 1.17→16, 1.18-1.20.4
   assert.equal(requiredMajor(v('1.21.1')), 21)
   assert.equal(requiredMajor(v('26.2')), 21, '26.x new scheme must not fall through to 8')
   assert.equal(requiredMajor(v('24w14a')), 21, 'snapshot must not fall through to 8')
-  // json 声明优先
+  // 显式更高需求仍然生效；无法识别的 id 不会把声明抬到 21
   assert.equal(requiredMajor({ id: 'x', javaVersion: { majorVersion: 25 } } as any), 25)
+  assert.equal(requiredMajor({ id: '1.20.1', javaVersion: { majorVersion: 21 } } as any), 21)
+  assert.equal(requiredMajor({ id: '愚者', javaVersion: { majorVersion: 17 } } as any), 17)
+  // 过期的 majorVersion 17 不能把 1.20.5+ 压回 17
+  assert.equal(requiredMajor({ id: '1.20.5', javaVersion: { majorVersion: 17 } } as any), 21)
+  assert.equal(requiredMajor({ id: '1.21', javaVersion: { majorVersion: 17 } } as any), 21)
+  assert.equal(requiredMajor({ id: '愚者', _mcVersion: '1.21.1', javaVersion: { majorVersion: 17 } } as any), 21)
+  assert.equal(requiredMajor({ id: '愚者', _mcVersion: '1.20.1', javaVersion: { majorVersion: 17 } } as any), 17)
 })
 
 test('download prompt wording says "Java N or higher", actual pick is logged with path and version', () => {

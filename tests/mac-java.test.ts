@@ -16,7 +16,7 @@ test('macOS JVM selection distinguishes native architectures and legacy Intel na
     { major: 25, is64Bit: true, architecture: 'arm64' },
     { major: 21, is64Bit: true, architecture: 'arm64' }
   ]
-  assert.equal(selectJavaByMajor(installed, 21, 'arm64'), installed[2])
+  assert.equal(selectJavaByMajor(installed, 21, 'arm64'), installed[1])
   assert.equal(selectJavaByMajor(installed, 21, 'x64'), installed[0])
   assert.equal(selectJavaByMajor(installed.slice(0, 1), 21, 'arm64'), null)
   assert.equal(javaHomeExecutable('java.home = /Users/测试用户/Library/Application Support/.kamucl/runtimes/jre-21/Contents/Home', 'darwin'), '/Users/测试用户/Library/Application Support/.kamucl/runtimes/jre-21/Contents/Home/bin/java')
