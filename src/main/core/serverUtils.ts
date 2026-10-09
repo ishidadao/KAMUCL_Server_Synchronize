@@ -98,3 +98,22 @@ export function supportsQuickPlayMultiplayer(version: string): boolean {
   const revision = snapshot[3].toLowerCase()
   return year > 23 || (year === 23 && (week > 14 || (week === 14 && revision >= 'a')))
 }
+
+/** 版本字符串能对应到一条 Minecraft 发布版或快照，而不是实例显示名 / 加载器 id。 */
+function recognizedMinecraftVersion(version: string): boolean {
+  const trimmed = version.trim()
+  if (/^(\d+)\.(\d+)(?:\.(\d+))?(?:$|[-+])/.test(trimmed)) return true
+  return /^(\d{2})w(\d{2})([a-z])$/i.test(trimmed)
+}
+
+/**
+ * 决定「启动并连接」要追加的游戏参数。
+ * 版本必须是真实 MC 版本：1.20+ / 23w14a+ 用 Quick Play；更旧的已识别版本用 --server/--port；
+ * 解析不出版本时不注入参数。
+ */
+export function serverJoinArguments(version: string, address: string): { kind: 'quickPlay' | 'legacy' | 'skip'; args: string[] } {
+  if (!recognizedMinecraftVersion(version) || version.trim() === '未知') return { kind: 'skip', args: [] }
+  if (supportsQuickPlayMultiplayer(version)) return { kind: 'quickPlay', args: ['--quickPlayMultiplayer', address] }
+  const parsed = parseServerAddress(address)
+  return { kind: 'legacy', args: ['--server', parsed.host, '--port', String(parsed.port)] }
+}

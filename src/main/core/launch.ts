@@ -60,7 +60,7 @@ import { mapLaunchFiles, waitForPreparation } from './launchPreparation'
 import { ensureLaunchArtifact, invalidLaunchArtifact } from './launchIntegrity'
 import { exitHistory, rememberExit } from './exitHistory'
 import { buildGameWindowArguments, resolveGameResolution } from './gameWindow'
-import { supportsQuickPlayMultiplayer } from './serverUtils'
+import { serverJoinArguments } from './serverUtils'
 import * as yggdrasil from './yggdrasil'
 import { serializeYggdrasilUserProperties } from './yggdrasilProvider'
 import { RunningGameRecords, type RunningGameRecord } from './runningGameRecords'
@@ -543,8 +543,17 @@ async function launchOwned(
       emit({ stage: 'java', progress: 0, text: '检查 Java 环境' })
       let javaPath: string
       const versionJava = instanceConfig._javaPath
+      // merged 只保留启动字段，显示名会盖住真实 MC 版本。Java 需求用解析出的版本，
+      // 这样「愚者」这类改名实例不会把 1.20.5+ 的 Java 21 需求压回 json 里过期的 17。
+      const resolvedMc = instanceMcVersion && instanceMcVersion !== '未知' ? instanceMcVersion : undefined
+      const javaProfile: VersionJson = {
+        ...merged,
+        inheritsFrom: instanceConfig.inheritsFrom,
+        _mcVersion: instanceConfig._mcVersion ?? resolvedMc,
+        javaVersion: merged.javaVersion ?? instanceConfig.javaVersion
+      }
       if (instanceConfig._javaAuto === true) {
-        javaPath = await ensureJava(merged, emit)
+        javaPath = await ensureJava(javaProfile, emit)
       } else if (versionJava) {
         if (!fs.existsSync(versionJava)) {
           throw new Error(`该版本指定的 Java 不存在（${versionJava}），请在版本设置中重新选择`)
@@ -552,7 +561,7 @@ async function launchOwned(
         javaPath = versionJava
         emit({ stage: 'java', progress: 1, text: '使用该版本指定的 Java' })
       } else if (settings.javaAuto) {
-        javaPath = await ensureJava(merged, emit)
+        javaPath = await ensureJava(javaProfile, emit)
       } else if (settings.javaPath) {
         if (!fs.existsSync(settings.javaPath)) {
           throw new Error('手动指定的 Java 路径不存在，请在设置中重新选择')
@@ -560,8 +569,8 @@ async function launchOwned(
         javaPath = settings.javaPath
         emit({ stage: 'java', progress: 1, text: '使用手动指定的 Java' })
       } else {
-        const need = requiredMajor(merged)
-        const found = await selectHealthyJava(await scanJavaForLaunch(), need, gameJavaArchitecture(merged))
+        const need = requiredMajor(javaProfile)
+        const found = await selectHealthyJava(await scanJavaForLaunch(), need, gameJavaArchitecture(javaProfile))
         if (!found) {
           throw new Error(
             `该版本需要 Java ${need} (64位)，但未找到（Java 自动管理已关闭）。请在设置中选择 Java 或开启自动管理`
@@ -570,14 +579,14 @@ async function launchOwned(
         javaPath = found.path
         emit({ stage: 'java', progress: 1, text: `使用本机 Java ${found.version}` })
       }
-      launchLog.info(`选定 Java（需要 major ${requiredMajor(merged)}）：${javaPath}`)
+      launchLog.info(`选定 Java（需要 major ${requiredMajor(javaProfile)}）：${javaPath}`)
 
       const selectedJavaPath = javaPath
       javaPath = await resolveJavaExecutable(javaPath)
       if (selectedJavaPath !== javaPath) log(`[KAMUCL] Java 转发入口已解析到真实运行时: ${javaPath}`)
       const javaInfo = await probeJavaAsync(javaPath)
-      const need = requiredMajor(merged)
-      const requiredArch = gameJavaArchitecture(merged)
+      const need = requiredMajor(javaProfile)
+      const requiredArch = gameJavaArchitecture(javaProfile)
       if (!javaInfo || !javaInfo.is64Bit || javaInfo.major < need || (requiredArch && javaInfo.architecture !== requiredArch)) {
         throw new Error('所选 Java 版本或架构不适配：需要 Java ' + need + '+（64 位' + (requiredArch ? '，' + requiredArch : '') + '），请修改实例设置或开启自动管理')
       }
@@ -700,8 +709,7 @@ async function launchOwned(
   const windowArgs = buildGameWindowArguments(gameArgs, resolution, workArea)
   gameArgs = windowArgs.args
 
-  // e3) 官方 Quick Play 自 Java 1.20 起支持；旧版只启动正确实例，不注入未知参数。
-  const minecraftVersion = instanceConfig._mcVersion ?? baseId
+  // e3) 直连用真实 MC 版本（与 prepareServerLaunch 的 mcVersion 同源），不用显示名或加载器 id。
   if (options.createCommandWorld) {
     const world = createCommandWorld(effectiveGameDir, clientJar)
     options.singleplayerWorld = world.id
@@ -710,10 +718,10 @@ async function launchOwned(
   if (options.singleplayerWorld) {
     if (!fs.existsSync(path.join(effectiveGameDir, 'saves', options.singleplayerWorld, 'level.dat'))) throw new Error('待进入的测试世界不存在，未创建重复世界')
     gameArgs.push('--quickPlaySingleplayer', options.singleplayerWorld)
-  } else if (serverAddress && supportsQuickPlayMultiplayer(minecraftVersion)) {
-    gameArgs.push('--quickPlayMultiplayer', serverAddress)
   } else if (serverAddress) {
-    log(`[KAMUCL] Minecraft ${minecraftVersion} 不支持 Quick Play，已仅启动实例`)
+    const join = serverJoinArguments(instanceMcVersion, serverAddress)
+    if (join.kind === 'skip') log(`[KAMUCL] Minecraft ${instanceMcVersion} 不支持 Quick Play，已仅启动实例`)
+    else gameArgs.push(...join.args)
   }
 
   // g) 启动进程（json 自带 -cp ${classpath} 时不再重复加 -cp；forge 的 -p 是模块路径仍需 -cp）
