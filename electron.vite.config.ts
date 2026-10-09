@@ -15,6 +15,8 @@ export default defineConfig({
       const bridgeJar = resolve(__dirname, 'bridge/dist/kamucl-bridge-1.0.1.jar')
       if (existsSync(bridgeJar)) copyFileSync(bridgeJar, resolve(__dirname, 'out/main/kamucl-bridge.jar'))
       else throw new Error('[kamucl] bridge/dist/kamucl-bridge-1.0.1.jar missing; run node scripts/build-bridge.cjs')
+      execFileSync(process.execPath, [resolve(__dirname, 'scripts/build-offline-skin-agent.cjs')], { stdio: 'inherit', windowsHide: true })
+      copyFileSync(resolve(__dirname, 'offline-skin-agent/dist/kamucl-offline-skin.jar'), resolve(__dirname, 'out/main/kamucl-offline-skin.jar'))
     } }],
     build: {
       outDir: 'out/main',

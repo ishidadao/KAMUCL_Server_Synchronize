@@ -147,7 +147,7 @@ test('exact project/link failures remain keyed for visible retry controls and un
 
 test('manual project validation accepts only verified Minecraft mods and resolves Modrinth slugs to canonical IDs',async()=>{
   const result=await build({entryPoints:['src/main/core/community.ts'],bundle:true,write:false,platform:'node',format:'cjs',packages:'external',plugins:[{name:'isolated-community',setup(plugin){
-    plugin.onResolve({filter:/^\.\/(download|versions|instances|settings|launcherLog|curseforgeKey)$/},args=>args.importer.endsWith('/community.ts')||args.importer.endsWith('\\community.ts')?{path:args.path,namespace:'service'}:undefined)
+    plugin.onResolve({filter:/^\.\/(download|versions|instances|settings|launcherLog|curseforgeKey)$/},args=>/[\\/](?:community|curseforgeChannel)\.ts$/.test(args.importer)?{path:args.path,namespace:'service'}:undefined)
     plugin.onLoad({filter:/.*/,namespace:'service'},()=>({contents:"export function downloadAll(){};export function readVersionJson(){};export function instanceDirectoryState(){};export function getSettings(){return{curseforgeApiKey:''}};export function logScope(){return{info(){},warn(){},error(){}}};export const CF_BUILTIN_KEY='';",loader:'js'}))
   }}]})
   const module={exports:{} as any};let payload:any,urls:string[]=[]

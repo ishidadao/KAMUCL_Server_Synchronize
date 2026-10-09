@@ -147,7 +147,9 @@ function uniqueInstanceId(name: string, reserved?: ReadonlySet<string>): string 
 async function readEntryJson(zip: PackZip, name: string): Promise<unknown> {
   const entry = zip.getEntry(name) ?? zip.getEntry('./' + name)
   if (!entry) return null
-  return JSON.parse((await entry.getData()).toString('utf8'))
+  // Some Windows exporters/editors write a UTF-8 BOM before otherwise valid
+  // JSON. Ignore only that leading marker; keep every other parse check intact.
+  return JSON.parse((await entry.getData()).toString('utf8').replace(/^\uFEFF/, ''))
 }
 
 // ---------------- 压缩包打开与格式探测（install / probe 共用） ----------------
@@ -193,7 +195,9 @@ async function openPackZip(filePath: string, signal?: AbortSignal, nested = fals
       const packs = entries.filter(entry => !entry.isDirectory && /\.mrpack$/i.test(entry.entryName))
       if (packs.length > 1) throw new Error('整合包包含多个 mrpack，请解压后选择要导入的那个 mrpack')
       if (packs.length === 1) {
-        if (packs[0].header.size > 512 * 1024 * 1024) throw new Error('整合包内层 mrpack 超过 512 MB，请解压后直接导入')
+        // The old 512 MiB limit guarded an in-memory nested ZIP copy. Nested
+        // archives now stream to an owned file; the outer/inner 32 GiB, ratio,
+        // path, CRC and entry-size limits still apply independently.
         if (fs.statSync(filePath).size <= 8 * 1024 * 1024 && packs[0].header.size <= 8 * 1024 * 1024) {
           const bytes = await packs[0].getData()
           await zip.close?.()
@@ -336,10 +340,13 @@ async function parseMrpack(zip: PackZip): Promise<Parsed> {
     // 客户端明确 unsupported 即服务端专用；optional / required 均可装入客户端。
     if (f.env?.client === 'unsupported') continue
     const rel = f.path.replace(/\\/g, '/').replace(/^\.\//, '')
-    if (!safeJoin(path.join(process.cwd(), '.mrpack-path-check'), rel)) {
+    const destination = safeJoin(path.join(process.cwd(), '.mrpack-path-check'), rel)
+    if (!destination) {
       throw new Error(`Modrinth 文件路径不安全：${f.path}`)
     }
-    const identity = process.platform === 'win32' ? rel.toLowerCase() : rel
+    // Deduplicate the same normalized destination used during installation:
+    // repeated/mixed separators must not bypass the Windows case-fold check.
+    const identity = process.platform === 'win32' ? destination.toLowerCase() : destination
     if (seenPaths.has(identity)) throw new Error(`Modrinth 清单包含重复目标路径：${rel}`)
     seenPaths.add(identity)
     const urls = (f.downloads ?? []).filter((value) => {

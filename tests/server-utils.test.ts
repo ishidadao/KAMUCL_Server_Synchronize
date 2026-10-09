@@ -82,6 +82,6 @@ test('server join uses the real version: quick play, legacy, or skip', () => {
 
 test('launch decides server join from the resolved Minecraft version', () => {
   const launch = fs.readFileSync('src/main/core/launch.ts', 'utf8')
-  assert.match(launch, /serverJoinArguments\(\s*instanceMcVersion/)
+  assert.match(launch, /serverJoinArguments\(\s*(?:instanceMcVersion|minecraftVersion)/)
   assert.doesNotMatch(launch, /const minecraftVersion = instanceConfig\._mcVersion \?\? baseId/)
 })

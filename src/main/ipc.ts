@@ -1,5 +1,7 @@
+import { registerAppearanceAssetHandlers } from './assetsSettings'
 import { currentPlatformInfo } from './platform'
 import { registerManagedServerIpc } from './core/managedServerIpc'
+import { applyUiWindowAutoFit } from './uiWindowSizing'
 import { registerRecordingsIpc } from './core/recordingsIpc'
 import { probeImport } from './core/importProbe'
 import { registerSkinEditorIpc } from './core/skinEditorIpc'
@@ -33,7 +35,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as defaultPacks from './core/defaultResourcePacks'
-import { DEFAULT_BACKGROUND, DEFAULT_LAUNCH_THUMBNAIL, IPC, IPC_EVENT } from '../shared/types'
+import { applyDefaultResourcePacksToInstance } from './core/defaultResourcePackApply'
+import { IPC, IPC_EVENT } from '../shared/types'
 import type {
   CommunityFile,
   CommunityKind,
@@ -95,7 +98,6 @@ import * as worlds from './core/worlds'
 import * as yggdrasil from './core/yggdrasil'
 import * as appearance from './core/appearanceAssets'
 import { applyNativeAppearance } from './nativeAppearance'
-import { carouselImages, MAX_CAROUSEL_IMAGES } from '../shared/appearancePolicy'
 import { pathIdentity } from './core/folderPaths'
 import * as direct from './core/directConnect'
 import type { DirectHostRequest } from '../shared/directConnect'
@@ -207,80 +209,13 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle(IPC.settingsSet, (_e, patch: Partial<Settings>) => {
     const saved = settings.saveSettings(patch)
     applyNativeAppearance(getWin(), saved)
+    applyUiWindowAutoFit(getWin(), saved.uiWindowAutoFit === true)
     return saved
   })
   ipcMain.handle(IPC.appSelectImage, async () => {
     return pickImage('选择图片')
   })
-  ipcMain.handle(IPC.appearanceImportBackground, async () => {
-    const source = await pickImage('导入自定义背景')
-    if (!source) return null
-    const previous = settings.getSettings()
-    const imported = await appearance.importGlobalImage(source, 'background')
-    try {
-      const next = settings.saveSettings({
-        background: { ...previous.background, image: imported.path, mode: 'image' }
-      })
-      if (previous.background.image !== imported.path) {
-        appearance.removeGlobalImage(previous.background.image, 'background')
-      }
-      return next
-    } catch (error) {
-      appearance.removeGlobalImage(imported.path, 'background')
-      throw error
-    }
-  })
-  ipcMain.handle(IPC.appearanceImportBackgroundMulti, async () => {
-    const win = getWin()
-    const options = { title: '导入背景图片（可多选）', properties: ['openFile' as const, 'multiSelections' as const],
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] }
-    const selection = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
-    if (selection.canceled || !selection.filePaths.length) return null
-    const imported: string[] = []
-    try {
-      for (const source of selection.filePaths) imported.push((await appearance.importGlobalImage(source, 'background')).path)
-      const current = settings.getSettings().background
-      const images = [...new Set([...(current.images ?? []), ...imported])]
-      return settings.saveSettings({ background: { ...current, images, image: images[0] ?? current.image, mode: 'image' } })
-    } catch (error) {
-      for (const image of imported) appearance.removeGlobalImage(image, 'background')
-      throw error
-    }
-  })
-  ipcMain.handle(IPC.appearanceResetBackground, () => {
-    const previous = settings.getSettings().background
-    const next = settings.saveSettings({ background: structuredClone(DEFAULT_BACKGROUND) })
-    appearance.removeGlobalImage(previous.image, 'background')
-    for (const image of previous.images ?? []) appearance.removeGlobalImage(image, 'background')
-    return next
-  })
-  ipcMain.handle(IPC.appearanceImportLaunchThumbnail, async () => {
-    const win = getWin()
-    const options = { title: '添加首页轮播图片（可多选）', properties: ['openFile' as const, 'multiSelections' as const],
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] }
-    const selection = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
-    if (selection.canceled || !selection.filePaths.length) return null
-    if (carouselImages(settings.getSettings().launchThumbnail).length + selection.filePaths.length > MAX_CAROUSEL_IMAGES) {
-      throw new Error(`首页轮播最多 ${MAX_CAROUSEL_IMAGES} 张图片，请先移除部分图片`)
-    }
-    const imported: string[] = []
-    try {
-      for (const source of selection.filePaths) imported.push((await appearance.importGlobalImage(source, 'launch-thumbnail')).path)
-      const current = settings.getSettings().launchThumbnail
-      const images = [...carouselImages(current), ...imported]
-      if (images.length > MAX_CAROUSEL_IMAGES) throw new Error(`首页轮播最多 ${MAX_CAROUSEL_IMAGES} 张图片`)
-      return settings.saveSettings({ launchThumbnail: { ...current, images, image: images[0] ?? '' } })
-    } catch (error) {
-      for (const image of imported) appearance.removeGlobalImage(image, 'launch-thumbnail')
-      throw error
-    }
-  })
-  ipcMain.handle(IPC.appearanceResetLaunchThumbnail, () => {
-    const previous = carouselImages(settings.getSettings().launchThumbnail)
-    const next = settings.saveSettings({ launchThumbnail: structuredClone(DEFAULT_LAUNCH_THUMBNAIL) })
-    for (const image of previous) appearance.removeGlobalImage(image, 'launch-thumbnail')
-    return next
-  })
+  registerAppearanceAssetHandlers(getWin)
   ipcMain.handle(IPC.appSelectDir, async () => {
     const win = getWin()
     const opts = { properties: ['openDirectory' as const], title: '选择游戏目录' }
@@ -659,16 +594,17 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   )
   ipcMain.handle(
     IPC.communityDownload,
-    async (_e, file: CommunityFile, target: { versionId: string; kind: CommunityKind; folder?: string }) => {
+    async (_e, file: CommunityFile, target: { versionId: string; kind: CommunityKind; folder?: string }, operationId?: string) => {
       const task = registerTask(`下载 ${file.fileName ?? '资源'}`, 'download')
       const progressGuard = new ProgressEventGuard()
       let lastStage = ''
       const taskEmit = (e: ProgressEvent): void => {
         const normalized = progressGuard.normalize(e)
         if (!['error', 'done'].includes(normalized.stage)) lastStage = normalized.stage
-        emit({ ...normalized, taskId: task.id, taskTitle: task.title })
+        emit({ ...normalized, taskId: task.id, taskTitle: task.title, ...(typeof operationId === 'string' && /^[a-zA-Z0-9:_-]{1,96}$/.test(operationId) ? { operationId } : {}) })
       }
       try {
+        taskEmit({ stage: 'download', progress: 0, indeterminate: true, text: '准备下载资源…' })
         const r = await community.communityDownload(file, target, taskEmit, (done) => {
           const cancelled = done.error === '已取消'
           send(IPC_EVENT.taskDone, {
@@ -766,20 +702,23 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   )
 
   // ---------------- 皮肤/披风（同步 await 返回，错误经 invoke reject 给前端） ----------------
-  ipcMain.handle(IPC.skinProfile, (_event, refresh?: boolean) => skins.getProfile(refresh === true))
+  ipcMain.handle(IPC.skinProfile, (_event, refresh?: boolean, accountId?: string) => skins.getProfile(refresh === true, accountId))
   ipcMain.handle(IPC.skinUpload, (_e, filePath: string, variant: SkinVariant) =>
     skins.uploadSkin(String(filePath ?? ''), variant)
   )
   ipcMain.handle(IPC.skinCape, (_e, capeId: string | null) => skins.changeCape(capeId ?? null))
-  ipcMain.handle(IPC.skinHistory, () => skins.history())
-  ipcMain.handle(IPC.skinHistoryDelete, (_e, id: string) =>
-    skins.historyDelete(String(id ?? ''))
+  ipcMain.handle(IPC.skinOfflineApply, (_e, filePath: string, variant: SkinVariant, accountId: string) =>
+    skins.applyOfflineSkin(String(filePath ?? ''), variant, String(accountId ?? '')))
+  ipcMain.handle(IPC.skinOfflineReset, (_e, accountId: string) => skins.resetOfflineSkin(String(accountId ?? '')))
+  ipcMain.handle(IPC.skinHistory, (_e, accountId?: string) => skins.history(accountId))
+  ipcMain.handle(IPC.skinHistoryDelete, (_e, id: string, accountId?: string) =>
+    skins.historyDelete(String(id ?? ''), accountId)
   )
-  ipcMain.handle(IPC.skinHistoryRename, (_e, id: string, name: string) =>
-    skins.historyRename(String(id ?? ''), String(name ?? ''))
+  ipcMain.handle(IPC.skinHistoryRename, (_e, id: string, name: string, accountId?: string) =>
+    skins.historyRename(String(id ?? ''), String(name ?? ''), accountId)
   )
-  ipcMain.handle(IPC.skinUploadHistory, (_e, id: string) =>
-    skins.uploadHistory(String(id ?? ''))
+  ipcMain.handle(IPC.skinUploadHistory, (_e, id: string, accountId?: string) =>
+    skins.uploadHistory(String(id ?? ''), accountId)
   )
   ipcMain.handle(IPC.skinAvatar, (_e, accountId?: string) => skins.getAvatar(accountId ? String(accountId) : undefined))
 
@@ -971,6 +910,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle(IPC.defaultPacksRemove, (_e, id: string) => defaultPacks.removeDefaultResourcePack(id))
   ipcMain.handle(IPC.defaultPacksMove, (_e, id: string, direction: number) => defaultPacks.moveDefaultResourcePack(id, direction))
   ipcMain.handle(IPC.defaultPacksSetEnabled, (_e, id: string, enabled: boolean) => defaultPacks.setDefaultResourcePackEnabled(id, enabled))
+  ipcMain.handle(IPC.defaultPacksApply, (_e, folder: string, id: string) => applyDefaultResourcePacksToInstance({ folder, id }))
 
   // ---------------- 启动器自更新与版本回退 ----------------
   applyUpdate.setUpdateEmitter(send)
@@ -1035,13 +975,37 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
 
   const modTargets = () => scanModTargets(settings.getSettings().folders.map(f => f.path), versions.scanInstalledFolder)
   ipcMain.handle(IPC.modsTargets, () => modTargets())
-  ipcMain.handle(IPC.modsPrepare, async (_e, ref: { id: string; folder: string }, input: { paths?: string[]; file?: CommunityFile }) => {
+  ipcMain.handle(IPC.modsPrepare, async (_e, ref: { id: string; folder: string }, input: { paths?: string[]; file?: CommunityFile }, operationId?: string) => {
     const target = selectModTarget(modTargets().versions, ref.id, ref.folder)
-    return prepareModInstall(target, input, emit)
+    const task = registerTask(`准备 MOD ${input.file?.fileName || '本地文件'}（尚未安装）`, 'download')
+    const progressGuard = new ProgressEventGuard()
+    let lastStage = 'mod-prepare'
+    const taskEmit = (event: ProgressEvent) => {
+      if (!['done', 'error'].includes(event.stage)) lastStage = event.stage
+      emit({ ...progressGuard.normalize(event), taskId: task.id, taskTitle: task.title, ...(typeof operationId === 'string' && /^[a-zA-Z0-9:_-]{1,96}$/.test(operationId) ? { operationId } : {}) })
+    }
+    taskEmit({ stage: 'mod-prepare', progress: 0, indeterminate: true, text: '读取 MOD 来源及兼容性，准备下载（尚未安装）…' })
+    try {
+      const plan = await community.withCommunitySignal(task.controller.signal, () => prepareModInstall(target, input, taskEmit, task.controller.signal))
+      send(IPC_EVENT.taskDone, { taskId: task.id, ok: true })
+      return plan
+    } catch (error) {
+      const cancelled = isCancelError(error)
+      if (!cancelled) taskEmit({ stage: 'error', progress: 0, text: `MOD 准备失败：${errText(error)}` })
+      send(IPC_EVENT.taskDone, { taskId: task.id, ok: false, error: errText(error), cancelled, stage: lastStage })
+      throw error
+    } finally { finishTask(task.id) }
   })
   ipcMain.handle(IPC.modsDiscard, (_e, id: string) => discardModPlan(String(id)))
-  ipcMain.handle(IPC.modsCommit, async (_e, id: string, includeDependencies: boolean) => {
+  ipcMain.handle(IPC.modsCommit, async (_e, id: string, includeDependencies: boolean, operationId?: string) => {
     const task = registerTask('安装 MOD 与前置依赖', 'download')
+    const progressGuard = new ProgressEventGuard()
+    let lastStage = 'mod-verify'
+    const taskEmit = (event: ProgressEvent) => {
+      if (!['done', 'error'].includes(event.stage)) lastStage = event.stage
+      emit({ ...progressGuard.normalize(event), taskId: task.id, taskTitle: task.title, ...(typeof operationId === 'string' && /^[a-zA-Z0-9:_-]{1,96}$/.test(operationId) ? { operationId } : {}) })
+    }
+    taskEmit({ stage: 'mod-verify', progress: 0, indeterminate: true, text: '准备下载前置及校验 MOD…' })
     try {
       const result = await executeModPlan(id, includeDependencies === true,
         ref => {
@@ -1049,11 +1013,13 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
           if (launch.getRunningVersionIds().has(ref.id)) throw new Error('目标实例正在运行，未安装任何 MOD；请退出该游戏后重试')
           return selectModTarget(modTargets().versions, ref.id, ref.folder!)
         },
-        e => emit({ ...e, taskId: task.id, taskTitle: task.title }), task.controller.signal)
+        taskEmit, task.controller.signal)
       send(IPC_EVENT.taskDone, { taskId: task.id, ok: true })
       return result
     } catch (error) {
-      send(IPC_EVENT.taskDone, { taskId: task.id, ok: false, error: errText(error), cancelled: isCancelError(error) })
+      const cancelled = isCancelError(error)
+      if (!cancelled) taskEmit({ stage: 'error', progress: 0, text: `MOD 安装失败：${errText(error)}` })
+      send(IPC_EVENT.taskDone, { taskId: task.id, ok: false, error: errText(error), cancelled, stage: lastStage })
       throw error
     } finally { finishTask(task.id) }
   })
@@ -1101,6 +1067,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     void shell.openPath(dir)
   })
   ipcMain.handle(IPC.fsList, (_e, rel: string, folder?: string) => listDir(String(rel ?? ''), folder))
+  ipcMain.handle(IPC.fsPath, (_e, rel: string, folder?: string) => safeDir(String(rel ?? ''), folder))
   ipcMain.handle(IPC.fsRemove, async (_e, rel: string, name: string, folder?: string) => {
     const dir = await safeDir(String(rel ?? ''), folder)
     const parts = String(rel ?? '').split(/[\\/]+/).filter(Boolean)

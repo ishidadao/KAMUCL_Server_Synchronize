@@ -49,3 +49,28 @@ test('original spawn observation retains original args/this; safe properties onl
 test('restore never overwrites another observer',()=>{
  const cp={spawn(){return new EventEmitter()}},sandbox={process:{mainModule:{require:name=>({'node:child_process':cp,'node:fs':{realpathSync:{native:v=>v}},'node:path':path.posix,'node:module':{syncBuiltinESMExports(){}}}[name])}},globalThis:null};sandbox.globalThis=sandbox;vm.createContext(sandbox);vm.runInContext('('+diagnostic.installOwnedGameSpawnObserver.toString()+')("/qa/game")',sandbox);const foreign=()=>{};cp.spawn=foreign;assert.throws(()=>vm.runInContext('('+diagnostic.restoreOwnedGameSpawnObserver.toString()+')()',sandbox));assert.equal(cp.spawn,foreign)
 })
+
+test('actual diagnostic orchestration keeps exact-owned AX and CI desktop readback separate, without changing world deadlines',async()=>{
+ const root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'KAMUCL favorites113 中文 ')))
+ try{
+  const profile=path.join(root,'profile'),games=path.join(root,'games §'),instanceId='owned-test',cwd=path.join(games,'versions',instanceId),output=path.join(root,'out'),binaries=path.join(root,'java','bin');for(const dir of [profile,cwd,output,binaries])fs.mkdirSync(dir,{recursive:true})
+  const binary=Buffer.alloc(8);binary.writeUInt32LE(0xfeedfacf,0);binary.writeUInt32LE(0x0100000c,4);const java=path.join(binaries,'java');fs.writeFileSync(java,binary);fs.writeFileSync(path.join(binaries,'jcmd'),'')
+  const now=Date.now(),spawn={kind:'original-owned-java-spawn',pid:25,javaPath:java,effectiveGameDir:cwd,startedAt:now+10,returnedAt:now+13,spawnedAt:now+15,nativeProperties:{}},record={pid:25,versionId:instanceId,effectiveGameDir:cwd,startedAt:new Date(now+16).toISOString()};fs.writeFileSync(path.join(profile,'running-game.json'),JSON.stringify(record))
+  const states=['launching','running'].map(status=>({status,versionId:instanceId,folder:games,launchId:'exact-launch'})),timeline=states.map((value,i)=>({channel:'event:launchState',receivedAt:now+(i?18:4),value})),launchTrace=[{index:1,channel:'game:launch',startedAt:now+2,completedAt:now+5,arguments:[instanceId,null,games,true]}],identity={pid:25,ppid:20,creationUnixUS:String((now+12)*1000),executable:java}
+  const calls=[],module={exports:{}},sandbox={require,module,exports:module.exports,Buffer,console,setTimeout,clearTimeout,__dirname,__filename:path.join(__dirname,'mac-owned-game-diagnostic113.cjs'),process:{platform:'darwin',arch:'arm64',execPath:process.execPath}}
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'mac-owned-game-diagnostic113.cjs'),'utf8'),sandbox)
+  const execute=(exe,args,options,callback)=>{calls.push({exe,args,options});let stdout=Buffer.alloc(0)
+   if(exe==='/usr/bin/xcrun')fs.writeFileSync(args.at(-1),binary)
+   else if(args[0]==='--identity')stdout=Buffer.from(JSON.stringify(identity))
+   else if(args[0]==='--observe')stdout=Buffer.from(JSON.stringify({complete:true,identityStable:true,windows:[{ownerPID:25}]}))
+   else if(args[0]==='--alerts')stdout=Buffer.from(JSON.stringify({complete:true,identityStable:true,accessibilityTrusted:false,textAvailable:false,rows:[],classification:'Unavailable owned AX text remains unknown'}))
+   else if(exe==='/usr/sbin/screencapture')fs.writeFileSync(args[1],Buffer.from('synthetic original desktop receipt'))
+   else if(args.includes('--native-readback'))stdout=Buffer.from(JSON.stringify(diagnostic.generatedNativeReadback(JSON.parse(fs.readFileSync(args.at(-1))).binding,{generatedRoot:root})))
+   else if(exe==='/usr/bin/sample')fs.writeFileSync(args.at(-1),'synthetic sample')
+   queueMicrotask(()=>callback(null,stdout,Buffer.alloc(0)));return{pid:100+calls.length}
+  }
+  const capture=await module.exports.createMacOwnedGameDiagnostics({root,profile,games,instanceId,output,phase:'contract',launcherPID:20,inspect:async()=>({spawns:[spawn],launchTrace}),execute});capture.setLaunchStartedAt(now);const report=await capture.beforeFailure({states,timeline}),row=report.captures[0]
+  assert.equal(row.maximumMs,9000);assert.equal(row.exceededMaximum,false);const alerts=row.tools.find(x=>x.name==='alerts');assert(alerts.complete);assert.equal(alerts.observation.accessibilityTrusted,false);assert.equal(alerts.observation.textAvailable,false);assert.match(row.desktopOriginal.classification,/not an owned-game-only image/);assert.equal(fs.readFileSync(path.join(capture.directory,row.desktopOriginal.file),'utf8'),'synthetic original desktop receipt')
+  const ax=calls.find(x=>x.args[0]==='--alerts');assert.deepEqual(Array.from(ax.args),['--alerts','25',identity.creationUnixUS,java]);assert.equal(ax.options.timeout,2000);assert.equal(calls.find(x=>x.exe==='/usr/sbin/screencapture').options.timeout,2000);assert(calls.every(x=>x.options.windowsHide));assert(!JSON.stringify(calls.map(x=>x.args)).includes('accessToken'))
+ }finally{assert.equal(path.dirname(root),fs.realpathSync.native(os.tmpdir()));assert(path.basename(root).startsWith('KAMUCL favorites113 中文 '));fs.rmSync(root,{recursive:true,force:true})}
+})

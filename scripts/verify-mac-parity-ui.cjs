@@ -90,6 +90,46 @@ function readMountedInstallInput(){
  // actual reactive props, preserving every original field without setters.
  return JSON.parse(JSON.stringify({file:p.input.file,target:p.target}))
 }
+function readCommunityQueueState(){
+ const observer=window.__macParityObserver
+ return{route:document.querySelector('[data-nav][aria-current=page]')?.dataset.nav,blocked:!!document.querySelector('.download-modal,.community-confirm'),items:[...document.querySelectorAll('.community-queue .queue-item')].map(element=>({id:observer.nodeForElement('CommunityDownloadQueue',element).key,state:element.dataset.state,fileName:element.querySelector('.queue-name')?.textContent.trim(),target:element.querySelector('.queue-info small')?.textContent.trim(),status:element.querySelector('[role=status]')?.textContent.trim()}))}
+}
+function readCommunityConfirmation(){
+ const rows=window.__macParityObserver.instances().filter(row=>row.type?.__name==='CommunityInstallConfirmation')
+ if(!rows.length)return{}
+ if(rows.length!==1)throw Error('Expected one actual CommunityInstallConfirmation, found '+rows.length)
+ return JSON.parse(JSON.stringify(rows[0].props.item))
+}
+function assertCommunityQueuePrepare(state,call,file,target){
+ assert.equal(state.blocked,false,'background preparation cannot retain a blocking install/file dialog')
+ assert.equal(state.items.length,1,'one original queue item must survive browsing')
+ const item=state.items[0];assert.match(item.id,/^[a-f0-9-]{36}$/);assert(['preparing','confirmation'].includes(item.state),item.status||'actual queue must prepare or await explicit confirmation')
+ assert.equal(item.fileName,file.fileName);assert(item.target.includes(target.id)&&item.target.includes(target.folder))
+ assert.equal(call?.channel,'mods:prepare');assert.equal(call.arguments.length,3);assert.deepEqual(call.arguments[0],{id:target.id,folder:target.folder});assert.deepEqual(call.arguments[1],{file});assert.match(call.arguments[2],/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/)
+ assert(Number.isFinite(call.startedAt));assert(!call.error,'real prepare errors cannot be accepted as pending work')
+ return item
+}
+function assertCommunityQueueConfirmation(item,call,file,target,queueId){
+ assert.equal(item.id,queueId);assert.equal(item.state,'confirmation');assert.equal(item.operationId,call.arguments[2]);assert.equal(item.folder,target.folder);assert.deepEqual(item.file,file)
+ for(const field of ['id','mcVersion','loader','folder'])assert.equal(item.target[field],target[field])
+ assert(Number.isFinite(call.completedAt)&&call.completedAt>=call.startedAt);assert(!call.error);assert.deepEqual(item.plan,call.result,'visible confirmation must use the exact completed original plan')
+ assert.equal(item.plan.warnings.length,0);assert.equal(item.plan.target.id,target.id);assert.equal(item.plan.target.folder,target.folder)
+ return item.plan
+}
+function classifyPreparationBrowse(call,actions){
+ assert.equal(call.channel,'mods:prepare');assert(Number.isFinite(call.startedAt)&&Number.isFinite(call.completedAt)&&call.completedAt>=call.startedAt)
+ assert(actions.length&&actions.every(row=>Number.isFinite(row.at)&&row.at>=call.startedAt),'browsing must follow the actual accepted prepare')
+ for(const row of actions){const click=row.originalTrustedClick;assert(click?.isTrusted===true&&click.type==='click'&&Number.isFinite(click.timeOrigin)&&click.timeOrigin>0&&Number.isFinite(click.at),'browsing timing requires the original trusted native click');assert.equal(row.at,click.timeOrigin+click.at);assert(Number.isFinite(row.observedAt)&&row.observedAt>=row.at,'later state observation cannot be presented as the original input time')}
+ return{classification:'Original public-service timing; no handler delay or fabricated latency',duringPrepare:actions.some(row=>row.at<call.completedAt),actions}
+}
+function assertActualCommitTrace(call,plan,prepareOperationId,progress){
+ assert.equal(call.channel,'mods:commit');assert(!call.error);assert.equal(call.arguments.length,3)
+ const operationId=call.arguments[2];assert.match(operationId,/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);assert.notEqual(operationId,prepareOperationId,'commit has its own original operation')
+ const events=progress.filter(row=>row.value.operationId===operationId);assert(events.length,'original production progress must correlate to the actual commit operation')
+ assert(events.every(row=>row.receivedAt>=call.startedAt&&row.value.taskTitle==='安装 MOD 与前置依赖'&&typeof row.value.taskId==='string'&&row.value.taskId));assert.equal(new Set(events.map(row=>row.value.taskId)).size,1)
+ assert(events.some(row=>row.value.stage==='mod-verify'),'original initial commit progress required');assert.deepEqual(call.arguments,[plan.id,true,events[0].value.operationId])
+ return{operationId,taskId:events[0].value.taskId,progress:events}
+}
 // Chromium may perform a microtask checkpoint between separate native event
 // listeners. Bind both observations to the original Event and read only after
 // its target handler has run, in the document's real bubbling phase.
@@ -211,6 +251,20 @@ async function collectAndRestoreInstallObserver(main,receipt){
  if(traceError)throw traceError
  return restored
 }
+async function collectAndRestoreCommitObservation(evaluate,main,receipt){
+ let progressReadError,progressRestoreError,installRestoreError,restored
+ try{receipt.originalCommitProgress=await evaluate('window.__macParityCommitProgress?.rows||[]')}
+ catch(error){progressReadError=error;receipt.progressReadError={name:error.name,message:error.message}}
+ // The trace read is diagnostic. Always remove the actual renderer listener,
+ // then restore exact main handlers, even if either separate transport rejects.
+ try{receipt.progressObserverRestoration=await evaluate("(()=>{const o=window.__macParityCommitProgress;if(o){o.off();delete window.__macParityCommitProgress}return{complete:true,wasInstalled:!!o}})()")}
+ catch(error){progressRestoreError=error;receipt.progressObserverRestorationError={name:error.name,message:error.message}}
+ try{restored=await collectAndRestoreInstallObserver(main,receipt)}catch(error){installRestoreError=error}
+ if(installRestoreError)throw installRestoreError
+ if(progressRestoreError)throw progressRestoreError
+ if(progressReadError)throw progressReadError
+ return restored
+}
 function preservePrimaryFailure(proof,error,save){
  proof.error={name:error.name,message:error.message}
  try{save()}catch(diagnosticError){(proof.diagnosticErrors??=[]).push({stage:'primary failure receipt',name:diagnosticError.name,message:diagnosticError.message})}
@@ -228,8 +282,27 @@ function assertParityTrustedTarget(trace,expected){
   assert(Number.isFinite(row.at)&&Number.isFinite(row.x)&&Number.isFinite(row.y));assert(row.target&&typeof row.target.tag==='string')
  }
 }
-function createParityCoordinate({call,evaluate,native,wait,identity,documentBinding,proof,save,now=()=>performance.now(),geometry=require('./qa-coordinate-geometry114.cjs')}){
+function assertParityPointerDismissal(trace,expected){
+ assert.equal(expected.selector,'[data-ui="App:32e6a4482be2"]','Only the actual download backdrop uses this pointerdown dismissal contract')
+ assert(Number.isInteger(expected.x)&&Number.isInteger(expected.y),'Dismissal must bind its actually dispatched integer coordinates')
+ assert.equal(trace.selector,expected.selector);assert.equal(trace.token,expected.token);assert.equal(trace.timeOrigin,expected.timeOrigin);assert.equal(trace.url,expected.url);assert.equal(trace.overflow,false)
+ assert.deepEqual(trace.records.map(row=>row.type),['pointerdown','mousedown','pointerup','mouseup'],'Original native down/up sequence must remain complete after the pointerdown target is unmounted')
+ const down=trace.records[0];assert.equal(down.matchesSelector,true);assert.equal(down.target.tag,'DIV');assert.equal(down.target.ui,'App:32e6a4482be2')
+ for(const row of trace.records){assert.equal(row.isTrusted,true);assert.equal(row.timeOrigin,expected.timeOrigin);assert.equal(row.url,expected.url);assert.equal(row.renderer.hasFocus,true);assert.equal(row.renderer.hidden,false);assert(Number.isFinite(row.at)&&Number.isFinite(row.x)&&Number.isFinite(row.y));assert.equal(row.x,expected.x);assert.equal(row.y,expected.y)}
+ return true
+}
+function observePointerDismissInteger(selector,original,integer){
+ const matches=document.querySelectorAll(selector),mask=matches.length===1?matches[0]:null,originalTarget=document.elementFromPoint(original.x,original.y),integerTarget=document.elementFromPoint(integer.x,integer.y)
+ return{count:matches.length,connected:!!mask?.isConnected,sameTarget:!!mask&&integerTarget===mask&&originalTarget===mask,bounds:mask?.getBoundingClientRect().toJSON(),target:integerTarget?{tag:integerTarget.tagName,ui:integerTarget.getAttribute('data-ui')}:null,x:integer.x,y:integer.y,renderer:{width:innerWidth,height:innerHeight,hasFocus:document.hasFocus(),hidden:document.hidden,pixelRatio:devicePixelRatio,timeOrigin:performance.timeOrigin,url:location.href,ready:document.readyState}}
+}
+function assertPointerDismissNative(value,reference,identity){
+ for(const key of ['pid','windowId','webContentsId'])assert.equal(value[key],identity[key])
+ assert(value.visible&&value.focused&&!value.minimized&&!value.appHidden);assert.equal(value.frontmostPID,identity.pid);assert(reference.window?.id>0);assert.equal(value.window?.id,reference.window.id,'Actual native CGWindow must stay the same throughout dismissal')
+ for(const key of ['x','y','width','height'])for(const name of ['bounds','contentBounds'])assert.equal(value[name][key],reference[name][key]);assert.equal(value.zoom,reference.zoom)
+}
+function createParityCoordinate({call,evaluate,native,wait,identity,documentBinding,proof,save,now=()=>performance.now(),pointerDismissal=false,geometry=require('./qa-coordinate-geometry114.cjs')}){
  return async(selector,{expectedLayout,deadline,absentSelectors=selector.startsWith('.download-modal')?['.download-modal .files-loading']:[]}={})=>{
+  if(pointerDismissal)assert.equal(selector,'[data-ui="App:32e6a4482be2"]')
   // Capture this call's document before any asynchronous operation. A later
   // explicit reload may bind the next call, never this call or its old samples.
   const boundDocument={...(typeof documentBinding==='function'?documentBinding():documentBinding)}
@@ -249,11 +322,23 @@ function createParityCoordinate({call,evaluate,native,wait,identity,documentBind
    if(expectedLayout)assert(nativeNavigationLayoutReady(observed,operation.samples.at(-2)?.value,{...expectedLayout,pid:identity.pid,windowId:identity.windowId,webContentsId:identity.webContentsId}),'original native navigation geometry condition must remain satisfied')
    assert(now()<end,'Original coordinate deadline elapsed before trusted-target observation')
    token=await evaluate(geometry.trustedTargetStartExpression(selector),remaining());operation.token=token;save()
-   const point=observed.coordinate
+   let point=observed.coordinate
+   if(pointerDismissal){
+    point={...point,x:Math.trunc(point.x),y:Math.trunc(point.y)}
+    const actual=await evaluate(`(${observePointerDismissInteger.toString()})(${JSON.stringify(selector)},${JSON.stringify({x:observed.coordinate.x,y:observed.coordinate.y})},${JSON.stringify({x:point.x,y:point.y})})`,remaining())
+    operation.integerDismissal={original:{x:observed.coordinate.x,y:observed.coordinate.y},dispatch:{x:point.x,y:point.y},actual};save()
+    assert.equal(actual.count,1);assert.equal(actual.connected,true);assert.equal(actual.sameTarget,true,'The actual integer pixel must hit the same original download backdrop');assert.equal(actual.target.tag,'DIV');assert.equal(actual.target.ui,'App:32e6a4482be2');assert.equal(actual.x,point.x);assert.equal(actual.y,point.y)
+    for(const key of ['x','y','width','height'])assert.equal(actual.bounds[key],observed.coordinate.bounds[key],'The original backdrop bounds must stay unchanged')
+    for(const key of ['width','height','pixelRatio','timeOrigin','url','ready'])assert.equal(actual.renderer[key],observed.coordinate.renderer[key]);assert.equal(actual.renderer.hasFocus,true);assert.equal(actual.renderer.hidden,false)
+    assert(now()<end,'Original coordinate deadline elapsed before integer pixel validation')
+   }
+   if(pointerDismissal){assertPointerDismissNative(observed.native,observed.native,identity);operation.trigger='pointerdown dismissal';operation.nativeSequence=[];assert.equal(await evaluate("!!document.querySelector('.dl-panel')",remaining()),true,'Actual download panel must exist before its backdrop dismissal')}
    for(const[type,buttons]of[['mouseMoved',0],['mousePressed',1],['mouseReleased',0]]){
     assert(now()<end,'Original coordinate deadline elapsed before input dispatch')
+    if(pointerDismissal){const actual=await native(identity,remaining());assertPointerDismissNative(actual,observed.native,identity);operation.nativeSequence.push({type,phase:'before',at:now(),actual});save()}
     const input={type,x:point.x,y:point.y,button:type==='mouseMoved'?'none':'left',buttons,clickCount:type==='mouseMoved'?0:1}
     proof.inputEvents.push({method:'Input.dispatchMouseEvent',parameters:input,at:now()});save();await call('Input.dispatchMouseEvent',input,remaining())
+    if(pointerDismissal){const actual=await native(identity,remaining());assertPointerDismissNative(actual,observed.native,identity);operation.nativeSequence.push({type,phase:'after',at:now(),actual});if(type==='mousePressed'){operation.actualDismissal=await evaluate("({panel:!!document.querySelector('.dl-panel'),backdrop:!!document.querySelector('[data-ui=\"App:32e6a4482be2\"]'),timeOrigin:performance.timeOrigin,url:location.href})",remaining());assert.equal(operation.actualDismissal.panel,false,'Production pointerdown must actually remove the download panel');assert.equal(operation.actualDismissal.backdrop,false);assert.equal(operation.actualDismissal.timeOrigin,boundDocument.timeOrigin);assert.equal(operation.actualDismissal.url,boundDocument.url)}save()}
     assert(now()<end,'Original coordinate deadline elapsed during input dispatch')
    }
    operation.observed=observed;operation.complete=true;return point
@@ -261,7 +346,7 @@ function createParityCoordinate({call,evaluate,native,wait,identity,documentBind
   finally{
    if(token!==undefined)try{
     operation.trustedTargets=await evaluate(geometry.trustedTargetStopExpression(token),remaining())
-    assertParityTrustedTarget(operation.trustedTargets,{selector,token,...boundDocument})
+    if(pointerDismissal)assertParityPointerDismissal(operation.trustedTargets,{selector,token,...boundDocument,...operation.integerDismissal?.dispatch});else assertParityTrustedTarget(operation.trustedTargets,{selector,token,...boundDocument})
     assert(now()<end,'Original coordinate deadline elapsed during trusted-target observation')
    }catch(error){operation.complete=false;operation.trustedTargetError={name:error.name,message:error.message};if(!primaryError)throw error}
    finally{save()}
@@ -473,6 +558,7 @@ module.exports=async function verifyMacParity(h){
    // substituting network, dependency, compatibility or download responses.
    proof.realService.handlerRegistration=await main(`(()=>{globalThis.macParityInstallTrace=(${createInstallHandlerObserver.toString()})(testElectron.ipcMain,['community:files','mods:prepare','mods:commit']);return macParityInstallTrace.registration})()`)
    await preserveInstallObservation(async()=>{
+   await evaluate("(()=>{if(window.__macParityCommitProgress)throw Error('Existing original progress observer');const rows=[],off=window.kamucl.on('event:progress',value=>rows.push({receivedAt:Date.now(),value}));window.__macParityCommitProgress={rows,off};return true})()")
    save()
    await type('.download-modal input[list="mod-minecraft-versions"]','1.20.1')
    await until('actual entered Minecraft filter',()=>evaluate(`document.querySelector('.download-modal input[list="mod-minecraft-versions"]')?.value`),value=>value==='1.20.1')
@@ -495,31 +581,46 @@ module.exports=async function verifyMacParity(h){
    const selectedTarget=await until('real intended download target',()=>evaluate(`(${readDownloadSelectionState.toString()})()`),row=>{try{assertMatchingDownloadResponse(row,matchingCall);assertDownloadTargetSelection(row,expectedTarget);return true}catch{return false}})
    proof.realService.targetSelection=selectedTarget;proof.realService.targetOption=assertDownloadTargetSelection(selectedTarget,expectedTarget);save()
    await screenshot('mac-parity-first-real-file-target-selection')
-   await textCoordinate('.download-modal .modal-actions','确认下载')
-   const observedInput=await until('actual mounted installer input',()=>evaluate(`(${readMountedInstallInput.toString()})()`),r=>!!r.file&&!!r.target)
-   proof.realService.chosen=observedInput;save()
-   assert.equal(observedInput.file.fileId,proof.realService.filteredFile.fileId);assert.equal(observedInput.file.sha1,proof.realService.filteredFile.sha1);assert.equal(observedInput.target.id,expectedTarget.id);assert.equal(observedInput.target.mcVersion,expectedTarget.mcVersion);assert.equal(observedInput.target.loader,expectedTarget.loader);assert.equal(fs.realpathSync.native(observedInput.target.folder),expectedTarget.folder)
-   await until('real prepared install UI',()=>evaluate(`(()=>{const e=document.querySelector('.modinstall-modal'),button=e?.querySelector('.btn-gold');return{ready:!!e&&!e.querySelector('.modal-loading')&&!!button&&!button.disabled,rows:e?[...e.querySelectorAll('.dependency-row')].map(r=>r.innerText):[],error:e?.querySelector('.modal-error')?.textContent}})()`),r=>r.ready,60000)
-   const chosen=await evaluate(`(${readMountedInstallInput.toString()})()`)
-   proof.realService.chosen=chosen;save()
-   assert(chosen.file&&chosen.file.sha1&&chosen.file.projectId==='P7dR8mSH','actual mounted installer receives selected public file with service hash')
+   const modsDirectory=path.join(games,'versions',expectedTarget.id,'mods'),beforeFiles=fs.readdirSync(modsDirectory).sort(),beforeCommitCalls=await main("macParityInstallTrace.calls.filter(c=>c.channel==='mods:commit')");assert.equal(beforeCommitCalls.length,0)
+   const browseActions=[],recordBrowse=async(label)=>{const click=proof.operations.filter(row=>row.complete&&row.trustedTargets).at(-1)?.trustedTargets.records.find(row=>row.type==='click');assert(click?.isTrusted&&Number.isFinite(click.timeOrigin)&&Number.isFinite(click.at),'browsing must retain its original trusted control click');const calls=await main('macParityInstallTrace.calls'),preparing=calls.find(c=>c.channel==='mods:prepare');browseActions.push({label,at:click.timeOrigin+click.at,originalTrustedClick:click,observedAt:Date.now(),prepareStartedAt:preparing?.startedAt,prepareCompletedAt:preparing?.completedAt,state:await evaluate(`(${readCommunityQueueState.toString()})()`),classification:'at binds the original native control click; state is a later read, and native search value is independently checked'});save()}
+   await textCoordinate('.download-modal .modal-actions','加入队列并检测')
+   const accepted=await until('real queue accepted and original prepare started',async()=>{const state=await evaluate(`(${readCommunityQueueState.toString()})()`),calls=await main('macParityInstallTrace.calls');const prepare=calls.find(c=>c.channel==='mods:prepare');if(prepare?.error)throw Error('Original preparation failed: '+prepare.error.message);return{state,prepare}},row=>{try{assertCommunityQueuePrepare(row.state,row.prepare,proof.realService.filteredFile,expectedTarget);return true}catch{return false}})
+   const queueId=assertCommunityQueuePrepare(accepted.state,accepted.prepare,proof.realService.filteredFile,expectedTarget).id;proof.realService.queueAcceptance=accepted;save()
+   // Use the original native editable control and routes immediately, before
+   // waiting for the public plan. Natural service timing is recorded honestly.
+   await type('input[aria-label="搜索收藏模组"]','P7dR8mSH');await recordBrowse('actual native favorite search while queue is active')
+   assert.equal(await evaluate('document.querySelector(\'input[aria-label="搜索收藏模组"]\')?.value'),'P7dR8mSH');assert(await evaluate("!!document.querySelector('[data-favorite-key=\"modrinth:P7dR8mSH\"]')"))
+   await route('home');await recordBrowse('actual home route while queue is active');assert.equal(browseActions.at(-1).state.route,'home');assert.equal(browseActions.at(-1).state.blocked,false)
+   await route('community');await recordBrowse('actual community return preserves queued request')
+   const returned=await main("macParityInstallTrace.calls.find(c=>c.channel==='mods:prepare')");assert.equal(assertCommunityQueuePrepare(browseActions.at(-1).state,returned,proof.realService.filteredFile,expectedTarget).id,queueId)
+   const prepared=await until('real queue awaits explicit install confirmation',async()=>{const state=await evaluate(`(${readCommunityQueueState.toString()})()`),calls=await main('macParityInstallTrace.calls');assert.equal(calls.filter(c=>c.channel==='mods:commit').length,0,'prepare and browsing must never auto-commit');const prepare=calls.find(c=>c.channel==='mods:prepare');if(prepare?.error||state.items.some(item=>item.state==='failed'))throw Error(prepare?.error?.message||state.items[0].status);return{state,prepare}},row=>row.state.items.length===1&&row.state.items[0].id===queueId&&row.state.items[0].state==='confirmation'&&!!row.prepare?.completedAt,60000)
+   assert.deepEqual(fs.readdirSync(modsDirectory).sort(),beforeFiles,'preparation must not write the target MOD directory before explicit confirmation')
+   proof.realService.backgroundBrowse=classifyPreparationBrowse(prepared.prepare,browseActions);proof.realService.queuePrepared=prepared;save();await screenshot('mac-parity-first-real-background-queue')
+   await coordinate('[data-ui="community:queue-shortcut"]');await textCoordinate('.community-queue .queue-actions','确认前置与安装')
+   const confirmation=await until('actual visible completed queue plan',()=>evaluate(`(${readCommunityConfirmation.toString()})()`),r=>!!r.file&&!!r.target&&!!r.plan)
+   const plan=assertCommunityQueueConfirmation(confirmation,prepared.prepare,proof.realService.filteredFile,expectedTarget,queueId),chosen={file:confirmation.file,target:confirmation.target};proof.realService.chosen=chosen;proof.realService.confirmation=confirmation;save()
+   assert(chosen.file&&chosen.file.sha1&&chosen.file.projectId==='P7dR8mSH','actual visible queue confirmation receives selected public file with service hash')
    assert(chosen.file.gameVersions.includes('1.20.1')&&chosen.file.loaders.includes('fabric'),'the actual selected file is compatible')
+   const visiblePlan=await evaluate("(()=>{const e=document.querySelector('.community-confirm'),button=e?.querySelector('.modal-actions .btn-gold'),choice=e?.querySelector('.dependency-choice input');return{present:!!e,enabled:!!button&&!button.disabled,rows:e?.querySelectorAll('.dependency-row').length,error:e?.querySelector('.modal-error')?.textContent,dependenciesChecked:choice?choice.checked:null}})()")
+   assert(visiblePlan.present&&visiblePlan.enabled&&!visiblePlan.error);assert.equal(visiblePlan.rows,plan.files.length);if(plan.files.some(file=>file.dependency))assert.equal(visiblePlan.dependenciesChecked,true,'necessary dependencies require explicit included confirmation');proof.realService.visiblePlan=visiblePlan
    const observedPlans=await main(`macParityInstallTrace.calls.filter(c=>c.channel==='mods:prepare'&&c.completedAt)`);proof.realService.originalHandlerTrace=await main(`macParityInstallTrace.calls`);save()
    const observedPlan=observedPlans.filter(row=>row.arguments[0].id===expectedTarget.id&&row.arguments[0].folder===chosen.target.folder&&row.arguments[1]?.file?.fileId===chosen.file.fileId);assert.equal(observedPlan.length,1,'exactly one completed original prepare for the actual selected target and public file');assert(!observedPlan[0].error)
-   const plan=observedPlan[0].result
+   assert.deepEqual(plan,observedPlan[0].result)
    proof.realService.plan=plan;save()
    assert(!plan.warnings.length,'real dependency plan has no compatibility warnings')
    assert.equal(plan.target.id,'联机验证实例');assert.equal(fs.realpathSync.native(plan.target.folder),fs.realpathSync.native(games));assert.deepEqual(observedPlan[0].arguments[0],{id:plan.target.id,folder:plan.target.folder})
    proof.realService.file=chosen.file;proof.realService.plan=plan;await screenshot('mac-parity-first-real-install-plan');save()
-   await coordinate('.modinstall-modal .modal-actions .btn-gold')
-   await until('real install completes without swallowing failure',()=>evaluate(`({done:!document.querySelector('.modinstall-modal')&&!document.querySelector('.download-modal'),error:document.querySelector('.modinstall-modal .modal-error')?.textContent})`),r=>r.done,90000)
+   assert.equal((await main("macParityInstallTrace.calls.filter(c=>c.channel==='mods:commit')")).length,0,'opening the prepared confirmation must not commit')
+   await coordinate('.community-confirm .modal-actions .btn-gold')
+   await until('real queued install completes without swallowing failure',async()=>{const state=await evaluate(`(${readCommunityQueueState.toString()})()`),calls=await main("macParityInstallTrace.calls.filter(c=>c.channel==='mods:commit')");if(state.items.some(item=>item.state==='failed')||calls.some(call=>call.error))throw Error(state.items.find(item=>item.state==='failed')?.status||calls.find(call=>call.error).error.message);return{state,calls}},r=>!r.state.blocked&&r.state.items.length===1&&r.state.items[0].id===queueId&&r.state.items[0].state==='completed'&&r.calls.length===1&&!!r.calls[0].completedAt,90000)
    const installed=path.join(games,'versions','联机验证实例','mods',chosen.file.fileName),stats=fs.statSync(installed)
    const bytes=fs.readFileSync(installed),actualSHA1=crypto.createHash('sha1').update(bytes).digest('hex')
    assert.equal(actualSHA1,chosen.file.sha1);assert.equal(stats.size,chosen.file.size)
-   const observedCommit=await main(`macParityInstallTrace.calls.filter(c=>c.channel==='mods:commit'&&c.completedAt)`);assert.equal(observedCommit.length,1);assert(!observedCommit[0].error);assert.deepEqual(observedCommit[0].arguments,[plan.id,true])
+   const observedCommit=await main(`macParityInstallTrace.calls.filter(c=>c.channel==='mods:commit'&&c.completedAt)`);assert.equal(observedCommit.length,1)
+   proof.realService.commitOperation=assertActualCommitTrace(observedCommit[0],plan,observedPlan[0].arguments[2],await evaluate('window.__macParityCommitProgress.rows'));save()
    proof.realService.installed={relative:path.relative(games,installed),bytes:stats.size,sha1:actualSHA1,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),declaredSHA1:chosen.file.sha1,target:plan.target};proof.realService.complete=true
    await screenshot('mac-parity-first-real-install-complete')
-   },()=>collectAndRestoreInstallObserver(main,proof.realService),proof.realService,save)
+   },()=>collectAndRestoreCommitObservation(evaluate,main,proof.realService),proof.realService,save)
    const finalSettings=await evaluate("window.kamucl.invoke('settings:get')")
    proof.persisted={accounts:(await accounts()).map(publicAccount),selected:publicAccount(await selected()),mascots:await state(),favorites:await evaluate("window.kamucl.invoke('mods:favorites')"),theme:finalSettings.theme,settingsSHA256:stableHash(finalSettings)}
    assert.equal(proof.persisted.accounts.length,2);assert.equal(proof.persisted.theme,'black-orange')
@@ -529,4 +630,4 @@ module.exports=async function verifyMacParity(h){
  finally{try{proof.trustedTargetObserverRestoration=await evaluate(require('./qa-coordinate-geometry114.cjs').trustedTargetRestoreExpression());save();assert.equal(proof.trustedTargetObserverRestoration.complete,true)}catch(error){proof.complete=false;proof.trustedTargetRestorationError={name:error.name,message:error.message};save();if(!proof.error){preservePrimaryFailure(proof,error,save);throw error}}}
 }
 async function coordinatePosition(evaluate,selector){return evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;if(!e.contains(document.elementFromPoint(x,y)))throw Error('actual queue hit target obscured');return{x,y}})()`)}
-Object.assign(module.exports,{ROUTES,THEMES,LAYOUTS,ROUTE_COMPONENTS,assertEditableNativeTextInput,nativeInputLayoutReady,nativeNavigationLayoutReady,assertNavigationCoverage,assertQueueLedger,publicAccount,stableHash,installMacParityObserver,readDownloadSelectionState,assertMatchingDownloadResponse,assertDownloadTargetSelection,readMountedInstallInput,createQueueClickObserver,createInstallHandlerObserver,restoreInstallHandlerObserver,preserveInstallObservation,collectAndRestoreInstallObserver,preservePrimaryFailure,assertParityTrustedTarget,createParityCoordinate,parityReloadReady,createParityReload})
+Object.assign(module.exports,{ROUTES,THEMES,LAYOUTS,ROUTE_COMPONENTS,assertEditableNativeTextInput,nativeInputLayoutReady,nativeNavigationLayoutReady,assertNavigationCoverage,assertQueueLedger,publicAccount,stableHash,installMacParityObserver,readDownloadSelectionState,assertMatchingDownloadResponse,assertDownloadTargetSelection,readMountedInstallInput,readCommunityQueueState,readCommunityConfirmation,assertCommunityQueuePrepare,assertCommunityQueueConfirmation,classifyPreparationBrowse,assertActualCommitTrace,createQueueClickObserver,createInstallHandlerObserver,restoreInstallHandlerObserver,preserveInstallObservation,collectAndRestoreInstallObserver,collectAndRestoreCommitObservation,preservePrimaryFailure,assertParityTrustedTarget,assertParityPointerDismissal,observePointerDismissInteger,assertPointerDismissNative,createParityCoordinate,parityReloadReady,createParityReload})

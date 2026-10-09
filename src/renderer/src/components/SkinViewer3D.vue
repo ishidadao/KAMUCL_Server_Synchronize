@@ -6,13 +6,13 @@ import { MASCOT_INTERACTIVE } from '../mascotInteraction'
 import { AmbientLight, DirectionalLight, Mesh, NearestFilter, PerspectiveCamera, Raycaster, Scene, SRGBColorSpace, Texture, Vector2, WebGLRenderer } from 'three'
 import type { SkinFace } from '@shared/skinPixels'
 import { useMotion } from '../motion'
-import { PreviewPlayer } from '../skinModel'
+import { PreviewPlayer, skinPreviewDistance, skinPreviewPitch, skinPreviewYaw, type SkinPreviewAnimation } from '../skinModel'
 import { loadImage, migrateLegacySkin, detectSkinVariant, normalizeCape } from '../skin-render'
 import { beginBootTask } from '../bootTasks'
 import { createFallbackSkin } from '../fallbackSkin'
 import { SkinGestureOwner } from '../skinEditorInteraction'
 import { MascotFrameDriver } from '../mascotFrameDriver'
-const props = withDefaults(defineProps<{ src?: string; cape?: string; variant?: 'classic' | 'slim'; animation?: 'walk' | 'idle'; paused?: boolean; editCanvas?: HTMLCanvasElement; revision?: number; editMode?: 'draw' | 'rotate'; editDisabled?: boolean; layer?: 'inner' | 'outer'; hiddenParts?: string[] }>(), { src:'', cape:'', variant:'classic', animation:'walk', paused:false })
+const props = withDefaults(defineProps<{ src?: string; cape?: string; variant?: 'classic' | 'slim'; animation?: SkinPreviewAnimation; paused?: boolean; editCanvas?: HTMLCanvasElement; revision?: number; editMode?: 'draw' | 'rotate'; editDisabled?: boolean; layer?: 'inner' | 'outer'; hiddenParts?: string[] }>(), { src:'', cape:'', variant:'classic', animation:'walk', paused:false })
 const emit = defineEmits<{ stroke: [active: boolean]; pixel: [x: number, y: number, face: SkinFace]; gap: []; rotate: []; capeError: [message: string] }>()
 const interactive = inject(MASCOT_INTERACTIVE, undefined)
 // Editing and camera gestures continue; only decorative walking yields priority.
@@ -33,6 +33,7 @@ let skin: Texture | null = null, cape: Texture | null = null
 let ambient: AmbientLight | undefined, keyLight: DirectionalLight | undefined
 let yaw = -.35, pitch = 0, zoom = 1, targetYaw = yaw, targetPitch = pitch, targetZoom = zoom
 let previous = 0, seconds = 0, blend = 1, distance = 50, pointerX = 0, pointerY = 0
+let crouchBlend = 0, flightBlend = 0
 const clamp = (n:number,min:number,max:number) => Math.max(min,Math.min(max,n))
 const finishBoot = beginBootTask()
 let bootTimer: ReturnType<typeof setTimeout> | undefined
@@ -105,16 +106,25 @@ function render(now:number): void {
   const moving = !effectivePaused.value && decorativeActive.value && !props.editCanvas
   if (moving) { seconds += dt; blend += ((props.animation === 'walk' ? 1 : 0)-blend)*Math.min(1,dt*6) }
   else blend = 0 // A paused/reduced preview stands naturally instead of freezing mid-step.
+  const targetCrouch = !props.editCanvas && props.animation === 'crouch' ? 1 : 0
+  const targetFlight = !props.editCanvas && props.animation === 'fly' ? 1 : 0
+  const stanceEase = decorativeActive.value ? k : 1
+  crouchBlend += (targetCrouch-crouchBlend)*stanceEase
+  flightBlend += (targetFlight-flightBlend)*stanceEase
   yaw += (targetYaw-yaw)*k; pitch += (targetPitch-pitch)*k; zoom += (targetZoom-zoom)*k
-  player.pose(seconds,props.editCanvas ? 0 : blend,yaw)
-  const d=distance/zoom
-  camera.position.set(0,16+Math.sin(pitch)*d,Math.cos(pitch)*d); camera.lookAt(0,16,0)
+  // Flight adds a reversible presentation angle; pointer rotation and reset keep
+  // their own underlying camera orientation, and the editor remains unchanged.
+  const viewYaw = skinPreviewYaw(yaw, flightBlend, !!props.editCanvas)
+  const viewPitch = skinPreviewPitch(pitch, flightBlend, !!props.editCanvas)
+  player.pose(seconds,props.editCanvas ? 0 : blend,viewYaw,{crouch:crouchBlend,fly:flightBlend})
+  const d=skinPreviewDistance(distance/zoom,flightBlend,!!props.editCanvas)
+  camera.position.set(0,16+Math.sin(viewPitch)*d,Math.cos(viewPitch)*d); camera.lookAt(0,16,0)
   gl.render(world,camera)
   if (container.value) {
     container.value.dataset.animationState = moving ? props.animation : 'paused'
-    container.value.dataset.pose = JSON.stringify({seconds, arm:player.skin.leftArm.rotation.x, leg:player.skin.leftLeg.rotation.x, fallbacks:frames.fallbacks})
+    container.value.dataset.pose = JSON.stringify({seconds, arm:player.skin.leftArm.rotation.x, leg:player.skin.leftLeg.rotation.x, crouch:crouchBlend, flight:flightBlend, yaw, viewYaw, pitch, viewPitch, fallbacks:frames.fallbacks})
   }
-  if (moving || dragging.value || Math.abs(targetYaw-yaw)+Math.abs(targetPitch-pitch)+Math.abs(targetZoom-zoom)>.0001) frames.request()
+  if (moving || dragging.value || Math.abs(targetYaw-yaw)+Math.abs(targetPitch-pitch)+Math.abs(targetZoom-zoom)+Math.abs(targetCrouch-crouchBlend)+Math.abs(targetFlight-flightBlend)>.0001) frames.request()
 }
 function down(event:PointerEvent):void {
   if (props.editDisabled || !supported.value || !gestures.begin(event, !!props.editCanvas, props.editMode)) return

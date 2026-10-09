@@ -40,6 +40,48 @@ test('Maven conflict identity selects child version while preserving classifiers
   } finally { await runtime.closeHttpClient(); fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('native-only Mojang classifier libraries never invent missing base JARs in tasks or launch validation', async () => {
+  const root = temp(), runtime = await versionInstallHarness(root)
+  try {
+    const names = ['org.lwjgl.lwjgl:lwjgl-platform:2.9.1', 'net.java.jinput:jinput-platform:2.0.5', 'tv.twitch:twitch-platform:5.16', 'tv.twitch:twitch-external-platform:4.5']
+    const nativeKeys = { windows: `natives-windows-${process.arch}`, linux: `natives-linux-${process.arch}`, osx: `natives-osx-${process.arch}` }
+    const hostKey = process.platform === 'win32' ? nativeKeys.windows : process.platform === 'darwin' ? nativeKeys.osx : nativeKeys.linux
+    const libraries = names.map((name, index) => ({ name,
+      // A repository base must not override an explicit classifiers-only declaration.
+      ...(index % 2 ? { url: 'https://example.invalid/maven/' } : {}), natives: nativeKeys,
+      downloads: { classifiers: Object.fromEntries(Object.values(nativeKeys).map(key => [key, {
+        path: `synthetic/${index}-${key}.jar`, url: `https://example.invalid/${index}-${key}.jar`, sha1: sha1(Buffer.from(`${index}-${key}`)), size: 12
+      }])) }
+    }))
+    const profile = { libraries }, resolved = runtime.resolvedLibraries(profile)
+    assert.deepEqual(resolved.artifacts, [])
+    assert.deepEqual(resolved.natives.map(file => path.basename(file)), names.map((_, index) => `${index}-${hostKey}.jar`))
+    assert.deepEqual(runtime.libraryTasks(profile).map(item => item.dest), resolved.natives)
+    const launch = runtime.launchLibraryFiles(profile)
+    assert.deepEqual(launch.map(item => item.dest), resolved.natives)
+    assert(launch.every(item => item.url && item.sha1 && item.size === 12))
+  } finally { await runtime.closeHttpClient(); fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('classifier metadata preserves explicit base artifacts and does not hide name-only installer dependencies', async () => {
+  const root = temp(), runtime = await versionInstallHarness(root)
+  try {
+    const profile = { libraries: [
+      { name: 'fixture:both:1', downloads: { artifact: { path: 'fixture/base.jar', url: 'https://example.invalid/base' }, classifiers: {} } },
+      { name: 'net.minecraftforge:fmlcore:1.0' },
+      { name: 'fixture:required:1', url: 'https://example.invalid/maven/' },
+      { name: 'fixture:unrepairable:1', downloads: {} }
+    ] }
+    const launch = runtime.launchLibraryFiles(profile)
+    assert.equal(launch.length, 4)
+    assert.equal(path.basename(launch[0].dest), 'base.jar')
+    assert.match(launch[1].url!, /maven\.minecraftforge\.net\/net\/minecraftforge\/fmlcore\/1\.0\/fmlcore-1\.0\.jar$/)
+    assert.equal(launch[2].url, 'https://example.invalid/maven/fixture/required/1/required-1.jar')
+    assert.equal(launch[3].url, undefined)
+    await assert.rejects(ensureLaunchArtifact(launch[3], 'official'), /缺少下载地址/)
+  } finally { await runtime.closeHttpClient(); fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('launch verification catches truncated and same-size corrupt client/library downloads and repairs them', async () => {
   const root = temp(), zip = new AdmZip(); zip.addFile('data.txt', Buffer.from('correct jar data'))
   const bytes = zip.toBuffer(); let hits = 0

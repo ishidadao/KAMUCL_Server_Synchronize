@@ -5,6 +5,7 @@ import { fetchVersionCatalog } from './versionCatalog'
 import { minecraftRuleOs } from '../../shared/platform'
 import { nativeLibraryForHost } from './platformNatives'
 import { resolveInstanceMetadata } from './instanceMetadata'
+import { cachedClientVersionEvidence, readClientVersionEvidence } from './instanceVersionEvidence'
 import { mavenIdentity } from './mavenIdentity'
 import { withFileJob } from './fileJobs'
 import { downloadLimiter } from './downloadLimits'
@@ -12,6 +13,7 @@ import { app, shell } from 'electron'
 import { recycleVersion } from './versionRemoval'
 import { samePath } from './folderPaths'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type {
   GameResolution,
@@ -57,6 +59,7 @@ import {
   withGameFolder
 } from './paths'
 import { ensureInstanceThumbnail, removeInstanceThumbnail } from './appearanceAssets'
+import { assetDownloadStatus } from '../../shared/assetDownloadStatus'
 
 export type ProgressEmit = (e: ProgressEvent) => void
 
@@ -263,14 +266,16 @@ function collectLibraries(vj: VersionJson): LibEntry[] {
     const lib = nativeLibraryForHost(source)
     if (lib.downloads?.artifact) {
       push(lib.downloads.artifact, false, mavenIdentity(lib.name), lib.nativeChecksumUrl)
-    } else if (lib.name && lib.url) {
+    } else if (!lib.downloads?.classifiers && lib.name && lib.url) {
       // Fabric/Quilt 等 profile 的 maven 坐标形式：无内联 downloads，需按仓库基址拼接
       const rel = mavenPath(lib.name)
       if (rel) {
         const base = lib.url.endsWith('/') ? lib.url : lib.url + '/'
         push({ path: rel, url: base + rel }, false, mavenIdentity(lib.name))
       }
-    } else if (lib.name) {
+    } else if (!lib.downloads?.classifiers && lib.name) {
+      // Mojang 的 classifiers-only 库明确没有普通 artifact；不能推断一个
+      // 不存在的 base JAR，否则安装成功后仍会在启动校验时缺少下载地址。
       // forge 安装器注入库（fmlcore/javafmllanguage/mclanguage/lowcodelanguage 等）：
       // json 仅给 maven 坐标，本地有则直接收编，缺失按组织推断 maven 源下载
       const rel = mavenPath(lib.name)
@@ -448,10 +453,11 @@ async function installVanillaUnlocked(
           const seen = new Set<string>()
           const tasks: DownloadTask[] = []
           const resourceFolders = allFolders()
-          for (const o of Object.values(objects)) {
+          for (const [name, o] of Object.entries(objects)) {
             if (!o?.hash || seen.has(o.hash)) continue
             seen.add(o.hash)
             tasks.push({
+              label: name,
               url: `https://resources.download.minecraft.net/${o.hash.slice(0, 2)}/${o.hash}`,
               dest: assetObjectPath(o.hash),
               sha1: o.hash,
@@ -465,7 +471,7 @@ async function installVanillaUnlocked(
               emit({
                 stage: 'assets',
                 progress: detail.fraction ?? 0,
-                text: `下载资源文件 ${d}/${t}`,
+                text: assetDownloadStatus(d, t, detail),
                 speed,
                 etaSeconds: detail.etaSeconds ?? undefined,
                 bytesDone: detail.bytesDone,
@@ -801,11 +807,21 @@ export function scanInstalledFolder(folder: string, onlyId?: string): {
     }
     try {
       const j = parseVersionFile(jp)
-      const resolved = resolveInstanceMetadata(j, id => {
+      const localParent = (id: string): VersionJson | undefined => {
         try {
           const local = versionJsonInFolder(root, id)
-          return parseVersionFile(fs.existsSync(local) ? local : baseVersionJsonPath(id))
+          const localBase = path.join(root, '.kamucl', 'base', id, `${id}.json`)
+          return parseVersionFile(fs.existsSync(local) ? local : fs.existsSync(localBase) ? localBase : baseVersionJsonPath(id))
         } catch { return undefined }
+      }
+      const resolved = resolveInstanceMetadata(j, localParent, chain => {
+        // Only unresolved metadata reads the client manifest/cache; listing never contacts a service.
+        const id = chain.length === 1 ? name : chain.at(-2)!.inheritsFrom!
+        const jar = chain.length === 1 ? path.join(dir, name, `${name}.jar`)
+          : fs.existsSync(versionJsonInFolder(root, id)) ? path.join(dir, id, `${id}.jar`)
+          : fs.existsSync(path.join(root, '.kamucl', 'base', id, `${id}.json`)) ? path.join(root, '.kamucl', 'base', id, `${id}.jar`)
+          : baseVersionJarPath(id)
+        return readClientVersionEvidence(jar) ?? cachedClientVersionEvidence(chain, [dir, path.join(root, '.kamucl', 'base'), path.dirname(baseVersionDir('_'))])
       })
       const item: InstalledVersion = { id: name, mcVersion: resolved.mcVersion, loader: resolved.loader, loaderVersion: resolved.loaderVersion, folder: root }
       if (j._modpackName) item.modpackName = j._modpackName
@@ -1038,7 +1054,13 @@ export function setVersionResolution(id: string, resolution: GameResolution | nu
   } else {
     delete version._resolution
   }
-  fs.writeFileSync(jp, JSON.stringify(version, null, 2), 'utf-8')
+  const temporary = `${jp}.window-size-${randomUUID()}.tmp`
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(version, null, 2), { encoding: 'utf-8', flag: 'wx' })
+    fs.renameSync(temporary, jp)
+  } finally {
+    try { fs.unlinkSync(temporary) } catch { /* Missing temporary file or failed cleanup never replaces the original. */ }
+  }
 }
 
 // ---------------- 版本隔离 ----------------

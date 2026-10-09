@@ -1,6 +1,7 @@
 import { cleanDesign } from '../../shared/visualDesign'
 import { normalizeVersionCategoryState } from '../../shared/versionCategories'
-import { ensureDefaultGameFolder } from './defaultGameFolder'
+import { storedUpdateMirrorUrls, validateUpdateMirrorUrls } from '../../shared/updateMirrors'
+import { defaultGameFolder, ensureDefaultGameFolder } from './defaultGameFolder'
 /**
  * 设置持久化：userData/settings.json
  */
@@ -37,7 +38,7 @@ function settingsFile(): string {
 }
 
 function defaults(): Settings {
-  const gameDir = path.join(app.getPath('appData'), '.kamucl')
+  const gameDir = defaultGameFolder(app.getPath('appData'))
   return {
     gameDir,
     folders: [{ path: gameDir, name: '默认文件夹', isDefault: true }],
@@ -50,10 +51,13 @@ function defaults(): Settings {
     memoryAuto: true,
     jvmArgs: '',
     resolution: { width: 854, height: 480, mode: 'windowed', fullscreen: false },
+    rememberGameWindowSize: false,
     mirror: 'bmclapi',
     ...DEFAULT_DOWNLOAD_LIMITS,
     defaultIsolation: true,
     reduceMotion: false,
+    uiWindowAutoFit: false,
+    updateMirrorUrls: [],
     msClientId: DEFAULT_MS_CLIENT_ID,
     theme: 'transparent',
     custom: structuredClone(DEFAULT_CUSTOM_THEME),
@@ -95,6 +99,9 @@ export function getSettings(): Settings {
     cached = {
       ...def,
       ...raw,
+      uiWindowAutoFit: raw.uiWindowAutoFit === true,
+      updateMirrorUrls: storedUpdateMirrorUrls(raw.updateMirrorUrls),
+      rememberGameWindowSize: raw.rememberGameWindowSize === true,
       ...normalizeVersionCategoryState(raw),
       visualDesign: cleanDesign(raw.visualDesign),
       resolution: { ...def.resolution, ...(raw.resolution ?? {}) },
@@ -113,7 +120,9 @@ export function getSettings(): Settings {
       folders:
         Array.isArray(raw.folders) && raw.folders.length
           ? raw.folders
-          : def.folders,
+          : raw.gameDir
+            ? [{ path: raw.gameDir, name: '默认文件夹', isDefault: true }]
+            : def.folders,
       activeFolder:
         raw.activeFolder ||
         raw.gameDir ||
@@ -171,6 +180,9 @@ export function getSettings(): Settings {
 
 /** 合并 patch 并写盘，返回合并后的完整 Settings */
 export function saveSettings(patch: Partial<Settings>): Settings {
+  if (Object.prototype.hasOwnProperty.call(patch, 'updateMirrorUrls')) patch = { ...patch, updateMirrorUrls: validateUpdateMirrorUrls(patch.updateMirrorUrls) }
+  if (Object.prototype.hasOwnProperty.call(patch, 'rememberGameWindowSize') && typeof patch.rememberGameWindowSize !== 'boolean') throw new Error('保存游戏窗口大小必须为开启或关闭')
+  if (Object.prototype.hasOwnProperty.call(patch, 'uiWindowAutoFit') && typeof patch.uiWindowAutoFit !== 'boolean') throw new Error('UI窗口自适应必须为开启或关闭')
   const cur = getSettings()
   validateDownloadLimits({ ...cur, ...patch })
   if (

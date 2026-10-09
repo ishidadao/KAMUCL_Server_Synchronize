@@ -225,7 +225,7 @@ async function runCapes(harness){
  proof.observerSources=[installCapeFixture,cleanupCapeFixture,installCapeUploadObserver,rendererCapeState,decodeCapeReferences,...process.platform==='win32'?[nativeWindow.focusOwned,nativeWindow.observeOwned,nativeWindow.captureOwned]:[]].map(fn=>({name:fn.name,sourceSha256:hash(Buffer.from(fn.toString()))}))
  proof.nativeForegroundObservations=[]
  proof.ownedProcess={pid:ownedTrack.pid,ledger:ownedTrack.ledger,classification:'Original disposable runner process ownership record; browser main PID is separately observed and bound below'}
- save();let installed=false,observer=false,failure,binding
+ save();let installed=false,observer=false,failure,binding,mac
  const remaining=(deadline)=>Math.max(1,deadline-performance.now())
  const until=async(label,read,predicate,maximumMs=10000)=>{const deadline=performance.now()+maximumMs,row={label,maximumMs,samples:[],complete:false};proof.stages.push(row);save()
   while(performance.now()<deadline){let value,matched=false;const sample={at:performance.now()}
@@ -234,6 +234,7 @@ async function runCapes(harness){
    sample.returnedAt=performance.now();row.samples.push(sample);save();if(performance.now()<deadline&&matched){row.complete=true;save();return value}await wait(Math.min(75,Math.max(0,deadline-performance.now())))}
   throw Error('Original '+label+' deadline elapsed')}
  const readNative=async(timeout=10000)=>{const value=await main(`(()=>{const e=testElectron,w=e.BrowserWindow.fromId(${proof.identity?.windowId});if(!w||w.webContents.id!==${proof.identity?.webContentsId})throw Error('Owned cape window changed');return{pid:process.pid,windowId:w.id,webContentsId:w.webContents.id,ownedAppMetrics:e.app.getAppMetrics().map(row=>({pid:row.pid,type:row.type,creationTime:row.creationTime})),bounds:w.getBounds(),contentBounds:w.getContentBounds(),minimumSize:w.getMinimumSize(),handleBytes:w.getNativeWindowHandle().toString('hex'),geometryUnits:'Original Electron getter values as reported in DIP; not claimed physical pixels',zoom:w.webContents.getZoomFactor(),maximized:w.isMaximized(),visible:w.isVisible(),minimized:w.isMinimized(),focused:w.isFocused(),appHidden:process.platform==='darwin'?e.app.isHidden():false,appHiddenApplicable:process.platform==='darwin'${process.platform==='win32'?`,nativeForeground:(${nativeWindow.observeOwned.toString()})(${JSON.stringify(proof.identity)},${JSON.stringify(koffiPath)})`:''}}})()`,timeout)
+  if(mac){value.macNativeForeground=await mac.observe();proof.nativeForegroundObservations.push({at:performance.now(),value:value.macNativeForeground});save()}
   if(value.nativeForeground){proof.nativeForegroundObservations.push({at:performance.now(),value:value.nativeForeground});save();assertCapeForeground(value.nativeForeground,proof.identity)}return value}
  const reload=async label=>{const before=await evaluate('({timeOrigin:performance.timeOrigin,url:location.href})');await call('Page.reload');const ready=await until(label,async timeout=>evaluate(`(${require('./verify-ui-refinement.cjs').readActualRendererTheme.toString()})(${before.timeOrigin})`,timeout),state=>state.timeOrigin!==before.timeOrigin&&state.url===before.url&&state.readyState==='complete'&&state.initialized===true&&state.storeTheme===theme&&state.domTheme===theme,12000)
   binding={timeOrigin:ready.timeOrigin,url:ready.url};proof.documents??=[];proof.documents.push({label,before,after:binding});save()}
@@ -278,8 +279,10 @@ async function runCapes(harness){
   const url=await evaluate('location.href'),expectedProfile=fs.realpathSync.native(profile)
   const native=await main(`(()=>{const e=testElectron,f=process.mainModule.require('node:fs'),windows=e.BrowserWindow.getAllWindows().filter(w=>w.webContents.getURL()===${JSON.stringify(url)});if(windows.length!==1)throw Error('Expected one owned renderer');const w=windows[0];return{pid:process.pid,ppid:process.ppid,windowId:w.id,webContentsId:w.webContents.id,profile:f.realpathSync.native(e.app.getPath('userData'))}})()`)
   assert(native.pid===ownedTrack.pid||native.ppid===ownedTrack.pid);assert.equal(native.profile,expectedProfile);proof.identity={pid:native.pid,windowId:native.windowId,webContentsId:native.webContentsId};proof.binding=native
+  if(process.platform==='darwin')mac=await require('./qa-native-mac120.cjs').create(harness,proof,directory,proof.identity)
   await call('Emulation.setFocusEmulationEnabled',{enabled:false});proof.focusEmulationDisabled=true
   if(process.platform==='win32'){proof.initialForegroundFocus=await main(`(${nativeWindow.focusOwned.toString()})(${JSON.stringify(proof.identity)},${JSON.stringify(koffiPath)})`);save()}
+  else if(mac){proof.initialForegroundFocus=await mac.focus();save()}
   proof.originalNative=await readNative()
   proof.originalRenderer=await inspect();proof.originalViewportMapping={widthDifference:proof.originalRenderer.width-Math.round(proof.originalNative.contentBounds.width/proof.originalNative.zoom),heightDifference:proof.originalRenderer.height-Math.round(proof.originalNative.contentBounds.height/proof.originalNative.zoom),classification:'Original independently reported native DIP getter and renderer CSS viewport; baseline differences are recorded, never used to relax the minimum-window input contract'}
   if(process.platform==='win32')proof.originalWin32=require('./qa-privacy-categories115.cjs').readOwnedWinClient(proof.originalNative.handleBytes,native.pid)

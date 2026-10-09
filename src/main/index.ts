@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, shell, ipcMain, net, protocol } from 'electron'
+import { app, BrowserWindow, crashReporter, shell, ipcMain, net, protocol, type BrowserWindowConstructorOptions } from 'electron'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createStartupSplash } from './startupSplash'
@@ -28,6 +28,7 @@ import { getRunningGamePids } from './core/launch'
 import { exitHistory, rememberExit } from './core/exitHistory'
 import { configureRuntimeGraphics } from './runtimeGraphics'
 import { resynchronizeWindowsRestore } from './windowRestoreVisibility'
+import { adaptiveWindowOptions, attachUiWindowSizing } from './uiWindowSizing'
 
 configureRuntimeGraphics(app.commandLine, process.platform, dirname(process.execPath))
 
@@ -99,11 +100,13 @@ function createWindow(startup?: Awaited<ReturnType<typeof createStartupSplash>>)
   logScope('window').debug('开始创建主窗口')
   applyNativeAppearance(null, getSettings())
   const windowState = loadWindowState()
+  const autoFit = getSettings().uiWindowAutoFit === true
+  let initialWindow: BrowserWindowConstructorOptions = { ...windowAppearance(), ...(windowState
+    ? { width: windowState.width, height: windowState.height, x: windowState.x, y: windowState.y }
+    : {}) }
+  if (autoFit) initialWindow = adaptiveWindowOptions(initialWindow)
   win = new BrowserWindow({
-    ...windowAppearance(),
-    ...(windowState
-      ? { width: windowState.width, height: windowState.height, x: windowState.x, y: windowState.y }
-      : {}),
+    ...initialWindow,
     icon: join(__dirname, '../../build/icon.png'),
     show: false,
     title: 'KAMUCL',
@@ -121,8 +124,11 @@ function createWindow(startup?: Awaited<ReturnType<typeof createStartupSplash>>)
   else   win.on('ready-to-show', () => win?.show())
   win.webContents.once('did-finish-load', () => { void frpManager.restore().catch(error => launcherLogWarn('frp', '恢复隧道失败', error)) })
   applyNativeAppearance(win, getSettings())
-  if (process.platform === 'win32' && windowState) restoreWindowBounds(win, windowState)
+  if (process.platform === 'win32' && windowState) restoreWindowBounds(win, autoFit
+    ? { ...windowState, width: initialWindow.width!, height: initialWindow.height!, x: initialWindow.x, y: initialWindow.y }
+    : windowState)
   if (windowState?.maximized) applyMaximized(win)
+  attachUiWindowSizing(win, autoFit)
   trackWindowState(win)
   win.once('show', () => { void acknowledgeUpdateStartup().catch(error => launcherLogWarn('update', '更新确认失败', error)) })
   const mainWindow = win

@@ -48,7 +48,8 @@
       "out/main/GameWindowFocus.exe",
       "out/main/MacGameWindow",
       "out/main/LinuxGameWindow",
-      "out/main/kamucl-bridge.jar"
+      "out/main/kamucl-bridge.jar",
+      "out/main/kamucl-offline-skin.jar"
     ],
     "beforePack": "scripts/portable-build-hook.cjs",
     "afterPack": "scripts/verify-windows-runtime.cjs",
@@ -80,7 +81,9 @@
       "unpackDirName": false,
       "artifactName": "KAMUCL-${version}.exe"
     },
-    "appImage": { "executableArgs": [] },
+    "appImage": {
+      "executableArgs": []
+    },
     "mac": {
       "minimumSystemVersion": "13.0.0",
       "target": [
@@ -93,12 +96,23 @@
     },
     "linux": {
       "maintainer": "kamubaba-i <325699197+kamubaba-i@users.noreply.github.com>",
-      "target": ["AppImage", "deb", "tar.gz"],
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
       "category": "Game",
       "executableName": "kamucl",
       "icon": "build/icon-512.png",
       "artifactName": "KAMUCL-${version}-linux-${arch}.${ext}",
-      "desktop": { "entry": { "Name": "KAMUCL", "Comment": "Minecraft launcher", "Categories": "Game;", "StartupWMClass": "KAMUCL" } },
+      "desktop": {
+        "entry": {
+          "Name": "KAMUCL",
+          "Comment": "Minecraft launcher",
+          "Categories": "Game;",
+          "StartupWMClass": "KAMUCL"
+        }
+      },
       "synopsis": "Minecraft launcher"
     }
   },

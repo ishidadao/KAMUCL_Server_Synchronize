@@ -25,6 +25,7 @@ import ServerDetails from '../components/connection/ServerDetails.vue'
 import ServerAddress from '../components/connection/ServerAddress.vue'
 import ManagedServerImport from '../components/ManagedServerImport.vue'
 import { privateServerText, serverAddressRevealed } from '@shared/serverPrivacy'
+import { serverVersionDisplay } from '@shared/serverVersionDisplay'
 import '../components/connection/connection.css'
 import { selectInstance, selectedInstance, refreshInstalled, store, toast } from '../store'
 import type { InstalledVersion, ServerEntry, ServerPingResult } from '@shared/types'
@@ -263,12 +264,14 @@ const parseTargetToken = (value: string): { id: string; folder: string } | null 
     return null
   }
 }
-const targetOf = (server: ServerEntry): InstalledVersion | undefined =>
-  targets.value.find(
+const targetOf = (server: ServerEntry): InstalledVersion | undefined => {
+  const matches = targets.value.filter(
     (target) =>
       target.id === server.versionId &&
       (!server.folder || normalizedPath(target.folder) === normalizedPath(server.folder))
   )
+  return matches.length === 1 ? matches[0] : undefined
+}
 const boundToken = (server: ServerEntry): string => {
   const target = targetOf(server)
   return target ? targetToken(target) : ''
@@ -389,7 +392,7 @@ const filteredServers = computed(() =>
           (ping?.motd.toLowerCase().includes(keyword.value) ?? false)
         )
       })
-    : servers.value).slice().sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite))
+    : servers.value).map(s => serverVersionDisplay(s, targetOf(s))).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite))
 )
 async function toggleFavorite(server: ServerEntry) {
   try { servers.value = await favoriteServer(server.id, !server.favorite) }

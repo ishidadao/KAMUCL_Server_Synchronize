@@ -3,6 +3,22 @@
 本定制分支的对应源码：https://github.com/ishidadao/KAMUCL_Update ，开发分支为 `main`。基础项目来自 https://github.com/kamubaba-i/KAMUCL ，保留其原作者署名、MIT 许可及第三方许可说明。
 
 Windows CI 的每次构建对应其实际 Git 提交；CI 产物不等同于正式发行，也不会自动创建 Release。正式发行应附带 `KAMUCL-版本-source.zip`，明确对应同名版本标签和提交。源码包包含应用源码、LGPL 部分、桥接 MOD、原生辅助程序、视觉资产、脚本、锁文件及许可，不包含账户、游戏缓存、服务器签名私钥或玩家数据。
+1. 安装 Node.js 24、npm、完整 JDK 17 或更新版本；JAVA_HOME 和 PATH 指向 JDK，
+   确认 javac 与 jar 可用。完整构建会编译桥接和离线皮肤组件。
+2. 在源码根目录运行 npm ci。
+3. node scripts/build-bridge.cjs 从 Fabric Maven 和 Maven Central 获取固定版本
+   编译依赖并校验 SHA256。离线可用 KAMUCL_BUILD_LIBS 指向同坐标 Maven 目录。
+4. 修改 src/main/core/voxlink 或其他源码，运行 npm run build。
+   Windows 原生程序由系统 .NET Framework csc.exe 编译；Mac 不需要它。
+5. npm start 启动修改版。Windows 用 npm run dist:win；本批 Windows 使用 Electron 44.3.0。
+   Mac 构建使用 package.json 固定的 Electron 版本及 npm run dist:mac，
+   与 Windows 共用界面与业务代码。本批目标为 Windows x64 和 Mac ARM64；
+   原生构建、实际验收范围和未覆盖项以本版交付记录为准，不能以同源推断通过。
+6. .github/workflows/mac-build.yml 描述原生构建、签名、APP ZIP 与 DMG 验证。
+   npm test、npx tsc --noEmit 与 npm run license:check 提供本地检查。
+7. scripts/build-offline-skin-agent.cjs 使用 javac --release 8 构建原创
+   GPL-3.0-or-later 离线皮肤提供器；npm run build 自动构建并复制该 JAR。
+   authlib-injector 由游戏首次使用时从官方来源校验下载，不包含在成品中。
 
 ## 重新构建
 

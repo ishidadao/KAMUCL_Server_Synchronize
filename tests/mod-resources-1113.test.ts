@@ -142,10 +142,13 @@ test('1113 scan deduplication separates catalog and icon results while retaining
     const mod = { exports: {} as any }
     new Function('require', 'module', 'exports', '__dirname', output.outputFiles[0].text)((id: string) => id === 'node:worker_threads' ? { Worker: CountedWorker } : req(id), mod, mod.exports, root)
     const names = ['a.jar.disabled'], catalog = mod.exports.scanModDirectory(root, true, names, 'catalog')
-    assert.equal(mod.exports.scanModDirectory(root, true, names, 'catalog'), catalog)
+    // Consumers now own separate cancellation subscriptions. The work and
+    // resolved snapshot remain shared, without sharing the caller's Promise.
+    const sameCatalog = mod.exports.scanModDirectory(root, true, names, 'catalog')
     const icons = mod.exports.scanModDirectory(root, true, names, 'icons')
-    const [metadata, illustrated] = await Promise.all([catalog, icons])
+    const [metadata, repeatedMetadata, illustrated] = await Promise.all([catalog, sameCatalog, icons])
     assert.equal(workers, 2)
+    assert.equal(repeatedMetadata, metadata)
     assert.equal(metadata[0].iconDataUrl, undefined); assert(illustrated[0].iconDataUrl)
     const { iconDataUrl, ...illustratedMetadata } = illustrated[0]
     assert.deepEqual(metadata[0], illustratedMetadata)

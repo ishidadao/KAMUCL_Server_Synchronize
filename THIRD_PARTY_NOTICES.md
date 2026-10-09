@@ -77,6 +77,20 @@ complete license texts are retained in licenses/ and dependency packages.
 Electron/Chromium notices remain alongside the executable in LICENSE and
 LICENSES.chromium.html. Compile-only bridge dependencies are not embedded.
 
+## Offline account appearance
+
+offline-skin-agent/src/cn/kamucl/skin/OfflineSkinAgent.java is an original KAMUCL
+component licensed GPL-3.0-or-later. Its source and build script are included;
+full terms: licenses/GPL-3.0.txt. It serves only the captured local appearance
+inside the game's JVM and does not authenticate access to online servers.
+
+authlib-injector is downloaded on demand, not bundled with the launcher:
+https://github.com/yushijinhun/authlib-injector (AGPLv3 with the upstream
+authlib-injector additional exception; see its COPYING.md).
+Upstream source, license and build instructions are available in that repository;
+https://github.com/yushijinhun/authlib-injector/blob/develop/COPYING.md.
+The existing download path checks the official release SHA256 before use.
+
 ## Optional Java runtimes
 
 Java is downloaded on demand from Eclipse Adoptium (Temurin) or Azul (Zulu),

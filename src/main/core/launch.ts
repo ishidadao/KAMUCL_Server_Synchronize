@@ -20,11 +20,11 @@ import { GameSession } from './gameSession'
 import { upgradeInstalledBridge } from './bridgeUpgrade'
 import { app, screen } from 'electron'
 import AdmZip from 'adm-zip'
-import type { LaunchState, ProgressEvent } from '../../shared/types'
-import { getSettings } from './settings'
+import type { GameResolution, LaunchState, ProgressEvent } from '../../shared/types'
+import { getSettings, saveSettings } from './settings'
 import { getValidAccount, selectedAccount } from './accounts'
 import { validateJavaRuntime } from './javaRuntimeHealth'
-import { ensureJava, requiredMajor, scanJavaForLaunch, resolveJavaExecutable, selectHealthyJava, probeJavaAsync } from './java'
+import { ensureJava, resolveJavaRequirement, javaCompatibilityError, scanJavaForLaunch, resolveJavaExecutable, selectHealthyJava, probeJavaAsync } from './java'
 import { gameJavaArchitecture } from './javaArchitecture'
 import { requireDesktopGamePlatform } from '../../shared/platform'
 import { assertNativeElf, resolveNativeIntegrity } from './platformNatives'
@@ -47,6 +47,7 @@ import {
   libraryTasks,
   launchLibraryFiles,
   readVersionJson,
+  setVersionResolution,
   resolveVersionChain,
   resolvedLibraries,
   rulesAllow,
@@ -60,8 +61,10 @@ import { mapLaunchFiles, waitForPreparation } from './launchPreparation'
 import { ensureLaunchArtifact, invalidLaunchArtifact } from './launchIntegrity'
 import { exitHistory, rememberExit } from './exitHistory'
 import { buildGameWindowArguments, resolveGameResolution } from './gameWindow'
+import { rememberedWindowResolution, watchGameWindowSize } from './gameWindowSize'
 import { serverJoinArguments } from './serverUtils'
 import * as yggdrasil from './yggdrasil'
+import { prepareOfflineSkinLaunch, type OfflineSkinLaunch } from './offlineSkinLaunch'
 import { serializeYggdrasilUserProperties } from './yggdrasilProvider'
 import { RunningGameRecords, type RunningGameRecord } from './runningGameRecords'
 import type { ManagedLaunchLease } from './managedServerLease'
@@ -335,6 +338,7 @@ async function launchOwned(
   }
 
   let spawned = false
+  const appearance: { offlineSkin: OfflineSkinLaunch | null } = { offlineSkin: null }
   const pipelineStarted = Date.now()
   try {
   launchLog.debug(`启动管线开始：实例 ${versionId}`)
@@ -383,10 +387,16 @@ async function launchOwned(
       // 自定义命名的原版实例：真实 MC 版本 id 从 _mcVersion 取
       let realId = baseIdProbe
       try {
-        realId = readVersionJson(baseIdProbe)._mcVersion ?? baseIdProbe
+        const { resolveInstanceMetadata } = await import('./instanceMetadata')
+        const { cachedClientVersionEvidence } = await import('./instanceVersionEvidence')
+        const profile = readVersionJson(baseIdProbe)
+        realId = resolveInstanceMetadata(profile, id => { try { return readVersionJson(id) } catch { return undefined } },
+          chain => cachedClientVersionEvidence(chain, allFolders().flatMap(folder => [path.join(folder, 'versions'), path.join(folder, '.kamucl', 'base')]))).mcVersion
       } catch {
         /* json 缺失时用 probe（即真实 MC id） */
       }
+      const { isMinecraftVersionId } = await import('./instanceMetadata')
+      if (!isMinecraftVersionId(realId)) throw new Error('无法可靠识别实例的 Minecraft 版本，不能自动补全游戏文件；请检查版本信息或重新安装')
       // 加载器实例的依赖原版补进 base 区；独立原版实例仍在 versions 区修复
       const dest = baseIdProbe !== versionId && !baseInVersions ? 'base' : 'versions'
       await installVanilla(realId, emit, dest, realId !== baseIdProbe ? baseIdProbe : undefined, deadline.signal)
@@ -397,6 +407,8 @@ async function launchOwned(
   // a0.1) 启动与管理页面共用同一个目录判定，避免配置路径、整合包和已存在
   // 独立内容在 UI 与最终 --gameDir 之间出现分歧；assets 仍使用全局共享目录。
   const effectiveGameDir = instanceDirectoryState(versionId, readVersionJson(versionId)).path
+  let resourcePacksConfigured = false
+  try { resourcePacksConfigured = /^\uFEFF?resourcePacks:/m.test(fs.readFileSync(path.join(effectiveGameDir, 'options.txt'), 'utf8')) } catch { /* a fresh instance */ }
   launchLog.debug(`实例 ${versionId} 游戏目录：${effectiveGameDir}`)
   fs.mkdirSync(effectiveGameDir, { recursive: true })
 
@@ -417,6 +429,7 @@ async function launchOwned(
   if (!merged.mainClass) throw new Error('版本 json 缺少 mainClass，文件可能损坏')
   const instanceConfig = readVersionJson(versionId)
   const { resolveInstanceMetadata } = await import('./instanceMetadata')
+  const { readClientVersionEvidence } = await import('./instanceVersionEvidence')
   let instanceMcVersion = resolveInstanceMetadata(instanceConfig, id => { try { return readVersionJson(id) } catch { return undefined } }).mcVersion
   const clientJar = clientJarPath(baseId)
   const account = selectedAccount()
@@ -426,17 +439,19 @@ async function launchOwned(
     try { deadline.signal.throwIfAborted(); const result = await work(); deadline.signal.throwIfAborted(); return result }
     finally { log(`[KAMUCL] 启动准备 · ${stage}：${Date.now() - started}ms`) }
   }
+  // Both runtime selection and game options wait for the same verified client.
+  // A repaired client may restore a canonical version missing from a renamed profile.
+  let clientPreparation: Promise<void> | undefined
+  const prepareClient = () => clientPreparation ??= (async () => {
+    emit({ stage: 'repair', progress: 0, text: '校验游戏本体完整性' })
+    await ensureLaunchArtifact({ ...readVersionJson(baseId).downloads?.client, dest: clientJar }, settings.mirror,
+      (done, total) => emit({ stage: 'repair', progress: total ? done / total : 0, text: '修复游戏本体' }), deadline.signal)
+    const canonical = readClientVersionEvidence(clientJar)
+    if (canonical) instanceMcVersion = canonical
+  })()
   const [{ classpath, nativesPath, launchAssets }, [validAccount, externalAuthArgs], javaPath] = await waitForPreparation([
     () => timed('游戏文件与配置', async () => {
-      emit({ stage: 'repair', progress: 0, text: '校验游戏本体完整性' })
-      await ensureLaunchArtifact({ ...readVersionJson(baseId).downloads?.client, dest: clientJar }, settings.mirror,
-        (done, total) => emit({ stage: 'repair', progress: total ? done / total : 0, text: '修复游戏本体' }), deadline.signal)
-      // Renamed vanilla profiles can lose their canonical id in launcher metadata.
-      try {
-        const manifest = new AdmZip(clientJar).readAsText('version.json')
-        const canonical = manifest && JSON.parse(manifest).id
-        if (typeof canonical === 'string' && canonical) instanceMcVersion = canonical
-      } catch { /* Older clients have no embedded version.json; keep resolved metadata. */ }
+      await prepareClient()
 
       // 默认按键同步（总开关开启时覆盖实例 options.txt 的 key_* 项，其余行原样保留）
       const { syncDefaultGameOptions } = await import('./defaultGameOptions')
@@ -445,7 +460,7 @@ async function launchOwned(
       if (gameOptionsResult.unsupported.length) log(`[KAMUCL] 当前版本不支持：${gameOptionsResult.unsupported.join('、')}`)
       if (settings.resourcePackSync) {
         const { syncDefaultResourcePacks } = await import('./defaultResourcePacks')
-        const count = syncDefaultResourcePacks(effectiveGameDir, instanceMcVersion, clientJarPath(baseId))
+        const count = syncDefaultResourcePacks(effectiveGameDir, instanceMcVersion, clientJarPath(baseId), { resourcePacksConfigured })
         if (count) log(`[KAMUCL] 已装载 ${count} 个默认材质包`)
       }
       if (settings.keySync) {
@@ -536,24 +551,24 @@ async function launchOwned(
       return { classpath, nativesPath, launchAssets }
     }),
     () => timed('账号验证', () => waitForPreparation([
-      () => getValidAccount(account), () => yggdrasil.launchArguments(account)
+      () => getValidAccount(account), async () => {
+        appearance.offlineSkin = await prepareOfflineSkinLaunch(account, deadline.signal)
+        if (appearance.offlineSkin) log('[KAMUCL] 已准备当前离线账号的本地皮肤；仅在本机游戏显示，下次启动应用新选择')
+        return appearance.offlineSkin?.args ?? yggdrasil.launchArguments(account)
+      }
     ])),
     () => timed('Java 环境', async () => {
+      await prepareClient()
       // c) Java：版本独立指定 > 手动指定 > 自动管理
       emit({ stage: 'java', progress: 0, text: '检查 Java 环境' })
+      const requirement = await resolveJavaRequirement(merged, instanceMcVersion, { signal: deadline.signal, modsDirectory: path.join(effectiveGameDir, 'mods') })
+      const need = requirement.recommendedMajor
+      const requiredArch = gameJavaArchitecture(merged)
       let javaPath: string
       const versionJava = instanceConfig._javaPath
-      // merged 只保留启动字段，显示名会盖住真实 MC 版本。Java 需求用解析出的版本，
-      // 这样「愚者」这类改名实例不会把 1.20.5+ 的 Java 21 需求压回 json 里过期的 17。
-      const resolvedMc = instanceMcVersion && instanceMcVersion !== '未知' ? instanceMcVersion : undefined
-      const javaProfile: VersionJson = {
-        ...merged,
-        inheritsFrom: instanceConfig.inheritsFrom,
-        _mcVersion: instanceConfig._mcVersion ?? resolvedMc,
-        javaVersion: merged.javaVersion ?? instanceConfig.javaVersion
-      }
+      const automatic = instanceConfig._javaAuto === true || !versionJava && (settings.javaAuto || !settings.javaPath)
       if (instanceConfig._javaAuto === true) {
-        javaPath = await ensureJava(javaProfile, emit)
+        javaPath = await ensureJava(merged, emit, instanceMcVersion, { requirement, signal: deadline.signal })
       } else if (versionJava) {
         if (!fs.existsSync(versionJava)) {
           throw new Error(`该版本指定的 Java 不存在（${versionJava}），请在版本设置中重新选择`)
@@ -561,7 +576,7 @@ async function launchOwned(
         javaPath = versionJava
         emit({ stage: 'java', progress: 1, text: '使用该版本指定的 Java' })
       } else if (settings.javaAuto) {
-        javaPath = await ensureJava(javaProfile, emit)
+        javaPath = await ensureJava(merged, emit, instanceMcVersion, { requirement, signal: deadline.signal })
       } else if (settings.javaPath) {
         if (!fs.existsSync(settings.javaPath)) {
           throw new Error('手动指定的 Java 路径不存在，请在设置中重新选择')
@@ -569,8 +584,7 @@ async function launchOwned(
         javaPath = settings.javaPath
         emit({ stage: 'java', progress: 1, text: '使用手动指定的 Java' })
       } else {
-        const need = requiredMajor(javaProfile)
-        const found = await selectHealthyJava(await scanJavaForLaunch(), need, gameJavaArchitecture(javaProfile))
+        const found = await selectHealthyJava(await scanJavaForLaunch(emit, deadline.signal), need, requiredArch, deadline.signal, requirement)
         if (!found) {
           throw new Error(
             `该版本需要 Java ${need} (64位)，但未找到（Java 自动管理已关闭）。请在设置中选择 Java 或开启自动管理`
@@ -579,17 +593,15 @@ async function launchOwned(
         javaPath = found.path
         emit({ stage: 'java', progress: 1, text: `使用本机 Java ${found.version}` })
       }
-      launchLog.info(`选定 Java（需要 major ${requiredMajor(javaProfile)}）：${javaPath}`)
+      launchLog.info(`选定 Java（推荐 Java ${need}，来源 ${requirement.source}）：${javaPath}`)
 
       const selectedJavaPath = javaPath
-      javaPath = await resolveJavaExecutable(javaPath)
+      javaPath = await resolveJavaExecutable(javaPath, deadline.signal)
       if (selectedJavaPath !== javaPath) log(`[KAMUCL] Java 转发入口已解析到真实运行时: ${javaPath}`)
-      const javaInfo = await probeJavaAsync(javaPath)
-      const need = requiredMajor(javaProfile)
-      const requiredArch = gameJavaArchitecture(javaProfile)
-      if (!javaInfo || !javaInfo.is64Bit || javaInfo.major < need || (requiredArch && javaInfo.architecture !== requiredArch)) {
-        throw new Error('所选 Java 版本或架构不适配：需要 Java ' + need + '+（64 位' + (requiredArch ? '，' + requiredArch : '') + '），请修改实例设置或开启自动管理')
-      }
+      const javaInfo = await probeJavaAsync(javaPath, deadline.signal)
+      const incompatibility = javaInfo ? javaCompatibilityError(javaInfo, requirement, requiredArch, automatic) : 'Java 无法正常运行'
+      if (incompatibility) throw new Error('所选 Java 不适配：' + incompatibility + '；请修改实例设置或开启自动管理')
+      if (!javaInfo) throw new Error('Java 无法正常运行')
       await validateJavaRuntime(javaPath, javaInfo.major)
       return javaPath
     })
@@ -709,7 +721,8 @@ async function launchOwned(
   const windowArgs = buildGameWindowArguments(gameArgs, resolution, workArea)
   gameArgs = windowArgs.args
 
-  // e3) 直连用真实 MC 版本（与 prepareServerLaunch 的 mcVersion 同源），不用显示名或加载器 id。
+  // e3) 直连用真实 MC 版本；1.20+ Quick Play，更旧已识别版本用 --server/--port。
+  const minecraftVersion = instanceMcVersion
   if (options.createCommandWorld) {
     const world = createCommandWorld(effectiveGameDir, clientJar)
     options.singleplayerWorld = world.id
@@ -719,8 +732,8 @@ async function launchOwned(
     if (!fs.existsSync(path.join(effectiveGameDir, 'saves', options.singleplayerWorld, 'level.dat'))) throw new Error('待进入的测试世界不存在，未创建重复世界')
     gameArgs.push('--quickPlaySingleplayer', options.singleplayerWorld)
   } else if (serverAddress) {
-    const join = serverJoinArguments(instanceMcVersion, serverAddress)
-    if (join.kind === 'skip') log(`[KAMUCL] Minecraft ${instanceMcVersion} 不支持 Quick Play，已仅启动实例`)
+    const join = serverJoinArguments(minecraftVersion, serverAddress)
+    if (join.kind === 'skip') log(`[KAMUCL] Minecraft ${minecraftVersion} 不支持 Quick Play，已仅启动实例`)
     else gameArgs.push(...join.args)
   }
 
@@ -736,6 +749,7 @@ async function launchOwned(
     if (argument.startsWith('-Dauthlibinjector.yggdrasil.prefetched=')) {
       return '-Dauthlibinjector.yggdrasil.prefetched=<metadata>'
     }
+    if (argument.startsWith('-javaagent:') && (argument.includes('kamucl-offline-skin.jar=') || (appearance.offlineSkin && argument.includes('authlib-injector')))) return argument.split('=')[0] + '=<local appearance>'
     if (privateLaunchValues.has(argument)) return '***'
     if (validAccount.accessToken && argument.includes(validAccount.accessToken)) {
       return argument.replaceAll(validAccount.accessToken, '***')
@@ -763,10 +777,28 @@ async function launchOwned(
   const { assertManagedDirectoryLaunchAllowed } = await import('./managedServerService')
   assertManagedDirectoryLaunchAllowed(effectiveGameDir, lease)
   deadline.dispose()
+  await appearance.offlineSkin?.releasePort()
   const proc = await withDeadline(signal => spawnGameProcess(javaPath, args, { cwd: effectiveGameDir, signal }), 15000, '游戏进程创建超时，请检查 Java 与系统权限')
   gameSession.attach(token, proc)
   spawned = true
   const spawnedAt = Date.now()
+  const capturedFolder = folderOfVersion(versionId)
+  const initialWindowPreference = structuredClone(instanceConfig._resolution ?? settings.resolution)
+  let savedWindowSize: LaunchState['savedWindowSize']
+  const windowSizeCapture = watchGameWindowSize(proc, {
+    enabled: () => process.platform === 'win32' && getSettings().rememberGameWindowSize === true,
+    commit: size => withGameFolder(capturedFolder, () => {
+      const currentInstance = readVersionJson(versionId)._resolution
+      // A user edit during gameplay wins over the automatic save.
+      const next = rememberedWindowResolution(initialWindowPreference, instanceConfig._resolution, getSettings().resolution, currentInstance, size)
+      if (!next) return
+      if (instanceConfig._resolution) setVersionResolution(versionId, next)
+      else saveSettings({ resolution: next })
+      savedWindowSize = { scope: instanceConfig._resolution ? 'instance' : 'global', previous: initialWindowPreference, resolution: next as GameResolution }
+      log(`[KAMUCL] 已保存游戏窗口化大小：${size.width} × ${size.height}`)
+    }),
+    onError: error => log(`[KAMUCL] 保存游戏窗口大小失败：${error instanceof Error ? error.message : String(error)}；原设置保留`)
+  })
   lastLaunch = {
     versionId,
     javaPath,
@@ -815,6 +847,7 @@ async function launchOwned(
     }
     if (!gameSession.release(token)) return
     if (proc.pid) clearRunningGame(proc.pid)
+    void windowSizeCapture.finish(false)
     launchLog.error(`游戏进程启动失败：pid=${proc.pid ?? '未知'}`, err)
     if (exitRecord) rememberExit(() => exitHistory().end(exitRecord, null))
     logStream?.end()
@@ -827,8 +860,10 @@ async function launchOwned(
     onState({ status: 'error', text: `进程启动失败: ${err.message}` })
   })
   proc.on('close', (code) => {
+    void appearance.offlineSkin?.dispose().catch(error => launchLog.warn('离线皮肤临时配置清理失败：' + String(error)))
     if (!gameSession.release(token)) return
     if (proc.pid) clearRunningGame(proc.pid)
+    windowSizeCapture.finish(code === 0)
     const runS = spawnedAt ? Math.round((Date.now() - spawnedAt) / 1000) : null
     const intentional = restartPending?.sessionToken === token || gameSession.wasIntentionalStop(token)
     const exitKind = exitEvidence.classify(code, intentional, process.platform)
@@ -844,10 +879,11 @@ async function launchOwned(
       lastLaunch.exitCode = code
       lastLaunch.endedAt = new Date().toISOString()
     }
-    onState({ status: 'exited', code: code ?? -1, exitKind, intentionalRestart: restartPending?.sessionToken === token, intentionalStop: gameSession.wasIntentionalStop(token), text: exitKind === 'shutdown-timeout' ? '游戏已关闭；退出清理超时，日志已保留' : `游戏已退出 (code=${code ?? '未知'})` })
+    onState({ status: 'exited', savedWindowSize, code: code ?? -1, exitKind, intentionalRestart: restartPending?.sessionToken === token, intentionalStop: gameSession.wasIntentionalStop(token), text: exitKind === 'shutdown-timeout' ? '游戏已关闭；退出清理超时，日志已保留' : `游戏已退出 (code=${code ?? '未知'})` })
   })
   } finally {
     deadline.dispose()
+    if (!spawned) await appearance.offlineSkin?.dispose()
     if (!spawned) { logStream?.end(); stdoutStream?.end(); stderrStream?.end() }
   }
 }

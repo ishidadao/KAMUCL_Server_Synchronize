@@ -317,14 +317,14 @@ export const MOD_ZH: Record<string, string> = {
   'fishing-real': '真实钓鱼',
   'tide': '潮汐',
   'stardew-fishing': '星露谷钓鱼',
-  'upgrade-aquatic': '升级水域',
-  'atmospheric': '大气',
-  'autumnity': '秋意',
+  'upgrade-aquatic': '碧海新生',
+  'atmospheric': '悠然一派',
+  'autumnity': '秋原',
   'environmental': '自然环境',
   'neapolitan': '那不勒斯风味',
   'savage-and-ravage': '野蛮与蹂躏',
   'upgraded-netherite': '下界合金升级',
-  'endergetic': '末地扩展',
+  'endergetic': '末地拓展',
   'repurposed-structures': '结构再利用',
   'dungeon-crawl': '地牢爬行',
   'lost-cities': '失落城市',
@@ -471,3 +471,35 @@ export const ZH_TO_SLUGS: Record<string, string[]> = (() => {
   }
   return map
 })()
+
+/** Common community names supplement the display name, without changing project identity. */
+export const MOD_ZH_ALIASES: Record<string, string[]> = {
+  '玉': ['jade'], '物品管理器': ['jei', 'rei', 'emi'], '物品查询': ['jei', 'rei', 'emi'],
+  '机械动力前置': ['flywheel'], '小地图': ['xaeros-minimap', 'journeymap'],
+  '大地图': ['xaeros-world-map', 'journeymap'], '暮色': ['twilightforest'],
+  '万用皮肤': ['customskinloader'],
+  // Official MC百科 entry names and explicit related-project slugs verified in
+  // 1.1.20. Keep the older launcher wording as searchable aliases as well.
+  // https://www.mcmod.cn/class/{3208,2412,2916,2470,1132}.html
+  '大气': ['atmospheric'], '秋意': ['autumnity'], '升级水域': ['upgrade-aquatic'],
+  '末地扩展': ['endergetic'], '静谧季节': ['serene-seasons'], '季节': ['serene-seasons'],
+  '静谧四季季节': ['serene-seasons'], '静谧四季/季节': ['serene-seasons'],
+}
+export function normalizeChineseModKeyword(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/g, '').replace(/(?:模组|模組|mod)$/i, '').replace(/[·：:()（）]/g, '')
+}
+/** A verified built-in exact name needs no network translation round trip. */
+export function hasExactChineseModName(keyword: string): boolean {
+  const key = normalizeChineseModKeyword(keyword)
+  return !!key && [...Object.keys(MOD_ZH_ALIASES), ...Object.keys(ZH_TO_SLUGS)].some(name => normalizeChineseModKeyword(name) === key)
+}
+/** Exact names win over substrings ("钠" must not become Sodium Extra). */
+export function chineseModSearchTerms(keyword: string): string[] {
+  if (!/[一-鿿]/.test(keyword)) return []
+  const key = normalizeChineseModKeyword(keyword)
+  if (!key) return []
+  const entries = [...Object.entries(MOD_ZH_ALIASES), ...Object.entries(ZH_TO_SLUGS)]
+  const exact = entries.filter(([name]) => normalizeChineseModKeyword(name) === key)
+  const candidates = exact.length ? exact : entries.filter(([name]) => normalizeChineseModKeyword(name).includes(key)).sort((a, b) => a[0].length - b[0].length)
+  return [...new Set(candidates.flatMap(([, slugs]) => slugs))].slice(0, 5)
+}

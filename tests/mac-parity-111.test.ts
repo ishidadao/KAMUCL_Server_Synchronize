@@ -8,7 +8,15 @@ import vm from 'node:vm'
 import { spawn } from 'node:child_process'
 
 const requireFixture = createRequire(path.resolve('package.json'))
-const { ROUTES, THEMES, LAYOUTS, ROUTE_COMPONENTS, assertNavigationCoverage, assertQueueLedger, publicAccount, stableHash, createQueueClickObserver, createInstallHandlerObserver, restoreInstallHandlerObserver, preserveInstallObservation, collectAndRestoreInstallObserver, preservePrimaryFailure, assertMatchingDownloadResponse, assertDownloadTargetSelection } = requireFixture('./scripts/verify-mac-parity-ui.cjs')
+const { ROUTES, THEMES, LAYOUTS, ROUTE_COMPONENTS, assertNavigationCoverage, assertQueueLedger, publicAccount, stableHash, createQueueClickObserver, createInstallHandlerObserver, restoreInstallHandlerObserver, preserveInstallObservation, collectAndRestoreInstallObserver, collectAndRestoreCommitObservation, preservePrimaryFailure, assertMatchingDownloadResponse, assertDownloadTargetSelection } = requireFixture('./scripts/verify-mac-parity-ui.cjs')
+function actualInstallProtection() {
+  const ts = requireFixture('typescript'), source = ts.createSourceFile('verify-mac-parity-ui.cjs', fs.readFileSync(path.resolve('scripts/verify-mac-parity-ui.cjs'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS), registrations: any[] = [], protections: any[] = []
+  const visit = (node: any) => { if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression) && node.expression.left.getText(source) === 'proof.realService.handlerRegistration') registrations.push(node); if (ts.isCallExpression(node) && node.expression.getText(source) === 'preserveInstallObservation') protections.push(node); ts.forEachChild(node, visit) }
+  visit(source); assert.equal(registrations.length, 1); assert.equal(protections.length, 1)
+  const registration = registrations[0], protection = protections[0], statements = [...registration.parent.statements], position = statements.indexOf(registration)
+  assert.equal(statements[position + 1], protection.parent.parent, 'actual protected call immediately follows successful registration; no unprotected await or checkpoint')
+  return { ts, source, protection }
+}
 const { parityRoot, assertRestartIdentity, assertNaturalOwnedClose, safeEvidence } = requireFixture('./scripts/verify-mac-parity.cjs')
 // Checkout line endings are not part of the cleanup/ownership contract. Keep
 // the structural assertions identical for the committed LF and Windows CRLF.
@@ -218,8 +226,9 @@ test('Mac outer failure receipt writer cannot replace the original nonzero asser
   assert.equal(preservePrimaryFailure(proof, primary, () => { throw writer }), primary)
   assert.equal(proof.error.message, primary.message)
   assert.deepEqual(proof.diagnosticErrors, [{ stage: 'primary failure receipt', name: writer.name, message: writer.message }])
-  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
-  assert.match(source, /\},\(\)=>collectAndRestoreInstallObserver\(main,proof\.realService\),proof\.realService,save\)/, 'the actual cleanup callback uses the tested trace-read-independent restoration entry')
+  const source = fs.readFileSync(path.resolve('scripts/verify-mac-parity-ui.cjs'), 'utf8')
+  const actual = actualInstallProtection(), cleanup = actual.protection.arguments[1]
+  assert(actual.ts.isArrowFunction(cleanup)); assert.equal(cleanup.body.getText(actual.source), 'collectAndRestoreCommitObservation(evaluate,main,proof.realService)', 'actual cleanup invokes the tested independent renderer-listener and exact main-handler restoration entry')
   assert.match(source, /catch\(error\)\{preservePrimaryFailure\(proof,error,save\);try\{await screenshot/, 'the actual outer catch uses the tested primary-preserving writer')
 })
 
@@ -232,8 +241,21 @@ test('Mac registered install observation enters finally protection before its fi
   await assert.rejects(preserveInstallObservation(async () => { throw writer }, () => collectAndRestoreInstallObserver(main, receipt), receipt, () => { throw writer }), error => error === writer)
   assert.equal(entries.get('mods:prepare'), original); assert.equal(mainCalls.length, 2); assert.equal(receipt.handlerRestoration.complete, true)
   assert.equal(receipt.primaryError.message, writer.message)
-  const source = sourceText('scripts/verify-mac-parity-ui.cjs')
-  assert.match(source, /handlerRegistration=await main\([^\n]+\)\n\s+await preserveInstallObservation\(async\(\)=>\{\n\s+save\(\)/, 'first registered checkpoint belongs to the protected actual operation')
+  const actual = actualInstallProtection(), operation = actual.protection.arguments[0]
+  assert(actual.ts.isArrowFunction(operation)); assert(actual.ts.isBlock(operation.body)); assert(actual.ts.isAwaitExpression(operation.body.statements[0].expression))
+  assert.match(operation.body.statements[0].getText(actual.source), /__macParityCommitProgress/, 'actual listener setup and its awaited transport are inside finally protection before the first checkpoint')
+  assert.equal(operation.body.statements[1].getText(actual.source), 'save()', 'the first registered writer remains inside the same protected operation')
+})
+
+test('Mac commit progress read failure still unsubscribes the actual renderer listener and restores exact main entries', async () => {
+  const trace = new Error('progress read transport rejection'), receipt: any = {}, calls: string[] = [], mainCalls: string[] = []
+  const evaluate = async (expression: string) => { calls.push(expression); if (expression === 'window.__macParityCommitProgress?.rows||[]') throw trace; assert.match(expression, /o\.off\(\)/); return { complete: true, wasInstalled: true } }
+  const main = async (expression: string) => { mainCalls.push(expression); return expression === 'macParityInstallTrace.calls' ? [] : { complete: true, restored: ['mods:commit'] } }
+  await assert.rejects(collectAndRestoreCommitObservation(evaluate, main, receipt), error => error === trace)
+  assert.equal(calls.length, 2); assert.equal(mainCalls.length, 2); assert.equal(receipt.progressObserverRestoration.complete, true); assert.equal(receipt.handlerRestoration.complete, true); assert.equal(receipt.progressReadError.message, trace.message)
+  const release = new Error('progress unsubscribe transport rejection'), both: any = {}; let mainRestored = false
+  await assert.rejects(collectAndRestoreCommitObservation(async () => { throw release }, async (expression: string) => { if (expression !== 'macParityInstallTrace.calls') mainRestored = true; return { complete: true } }, both), error => error === release)
+  assert(mainRestored); assert.equal(both.handlerRestoration.complete, true); assert.equal(both.progressObserverRestorationError.message, release.message)
 })
 
 function publicDownloadFixture() {

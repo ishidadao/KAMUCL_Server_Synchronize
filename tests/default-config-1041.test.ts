@@ -27,7 +27,7 @@ function pack(file: string, marker: string) {
   const zip = new AdmZip(); zip.addFile('pack.mcmeta', Buffer.from(JSON.stringify({ pack: { pack_format: 75, description: marker } }))); zip.addFile('assets/minecraft/test.txt', Buffer.from(marker)); zip.writeZip(file)
 }
 
-test('individual default pack switches persist, preserve priority and remove only managed selections', async t => {
+test('explicit default pack reapplication follows switches and preserves priority and unmanaged selections', async t => {
   const { root, api } = await runtime(t)
   const a = path.join(root, 'A.zip'), b = path.join(root, 'B.zip'); pack(a, 'A'); pack(b, 'B')
   const [first, second] = api.importDefaultResourcePacks([a, b])
@@ -37,21 +37,21 @@ test('individual default pack switches persist, preserve priority and remove onl
     fs.writeFileSync(path.join(game, 'options.txt'), 'resourcePacks:["vanilla","file/Personal.zip"]\nincompatibleResourcePacks:[]\nlang:zh_cn\n')
     api.setDefaultResourcePackEnabled(first.id, true)
     api.setDefaultResourcePackEnabled(second.id, true)
-    api.syncDefaultResourcePacks(game, mc)
+    api.applyDefaultResourcePacks(game, mc)
     api.setDefaultResourcePackEnabled(first.id, false)
     assert.equal(api.getDefaultResourcePacks()[0].enabled, false)
     assert.equal(api.importDefaultResourcePacks([a])[0].enabled, false, 'duplicate import must preserve disabled state')
-    assert.equal(api.syncDefaultResourcePacks(game, mc), 1)
+    assert.equal(api.applyDefaultResourcePacks(game, mc), 1)
     let options = fs.readFileSync(path.join(game, 'options.txt'), 'utf8')
     assert(!options.includes(first.id)); assert(options.includes(second.id)); assert(options.includes('Personal.zip'))
     assert.equal(fs.readdirSync(path.join(game, 'resourcepacks')).length, 2)
     api.setDefaultResourcePackEnabled(second.id, false)
-    assert.equal(api.syncDefaultResourcePacks(game, mc), 0)
+    assert.equal(api.applyDefaultResourcePacks(game, mc), 0)
     options = fs.readFileSync(path.join(game, 'options.txt'), 'utf8')
     assert(!options.includes(second.id)); assert(options.includes('lang:zh_cn'))
     api.setDefaultResourcePackEnabled(first.id, true)
     api.setDefaultResourcePackEnabled(second.id, true)
-    api.syncDefaultResourcePacks(game, mc)
+    api.applyDefaultResourcePacks(game, mc)
     options = fs.readFileSync(path.join(game, 'options.txt'), 'utf8')
     assert(options.indexOf(first.id) < options.indexOf(second.id))
   }
@@ -83,7 +83,7 @@ test('default packs import multiple ZIPs, deduplicate, preserve sources and appl
   for (const [name, mc] of [['isolated-fabric', '26.2'], ['isolated-forge', '1.20.1'], ['legacy', '1.12.2']]) {
     const game = path.join(root, name); fs.mkdirSync(game)
     fs.writeFileSync(path.join(game, 'options.txt'), 'lang:zh_cn\nkey_key.forward:key.keyboard.q\nresourcePacks:["vanilla","file/Personal.zip"]\ncustom:keep\n')
-    assert.equal(api.syncDefaultResourcePacks(game, mc), 2)
+    assert.equal(api.applyDefaultResourcePacks(game, mc), 2)
     const options = fs.readFileSync(path.join(game, 'options.txt'), 'utf8')
     assert(options.includes('custom:keep')); assert(options.includes('key_key.forward:key.keyboard.q')); assert(options.includes('file/Personal.zip'))
     const enabled = JSON.parse(options.split('\n').find(l => l.startsWith('resourcePacks:'))!.slice(14))
@@ -95,6 +95,8 @@ test('default packs import multiple ZIPs, deduplicate, preserve sources and appl
   }
   api.removeDefaultResourcePack(firstId)
   const game = path.join(root, 'isolated-fabric'); api.syncDefaultResourcePacks(game, '26.2')
+  assert(fs.readFileSync(path.join(game, 'options.txt'), 'utf8').includes(firstId), 'removing a global default preserves the instance choice')
+  api.applyDefaultResourcePacks(game, '26.2')
   assert(!fs.readFileSync(path.join(game, 'options.txt'), 'utf8').includes(firstId))
   assert.equal(fs.readdirSync(path.join(game, 'resourcepacks')).length, 2, 'remove never deletes existing instance files')
   assert(fs.existsSync(a) && fs.existsSync(b))
@@ -112,7 +114,7 @@ test('invalid pack batch and malformed options preserve existing configuration',
   assert.equal(fs.readFileSync(options, 'utf8'), 'resourcePacks:damaged\nlang:en_us\n')
 })
 
-test('compatible defaults are selected on the first launch, clearing old false incompatibility overrides', async t => {
+test('explicitly reapplying compatible defaults clears old false incompatibility overrides', async t => {
   const { root, api } = await runtime(t)
   const client = path.join(root, 'client.jar'), game = path.join(root, 'game'), resource = path.join(root, 'Fullbright.zip')
   const jar = new AdmZip(); jar.addFile('version.json', Buffer.from(JSON.stringify({ pack_version: { resource_major: 88, resource_minor: 0 } }))); jar.writeZip(client)
@@ -120,7 +122,7 @@ test('compatible defaults are selected on the first launch, clearing old false i
   const [p] = api.importDefaultResourcePacks([resource]), id = `file/KAMUCL-default-${p.id}-${p.name}`
   fs.mkdirSync(game)
   fs.writeFileSync(path.join(game, 'options.txt'), `resourcePacks:["vanilla","file/Personal.zip","${id}"]\nincompatibleResourcePacks:["file/Personal.zip","${id}"]\nlang:zh_cn\n`)
-  api.syncDefaultResourcePacks(game, '26.2', client)
+  api.applyDefaultResourcePacks(game, '26.2', client)
   const lines = fs.readFileSync(path.join(game, 'options.txt'), 'utf8').split('\n')
   const selected = JSON.parse(lines.find(x => x.startsWith('resourcePacks:'))!.slice(14))
   const overrides = JSON.parse(lines.find(x => x.startsWith('incompatibleResourcePacks:'))!.slice(26))

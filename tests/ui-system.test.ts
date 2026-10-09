@@ -10,7 +10,19 @@ test('settings search resolves actual destinations and understands mixed keyword
   assert.equal(searchSettings('限速')[0].category, 'downloads')
   assert.equal(searchSettings('G1GC')[0].id, 'jvm')
   assert.equal(searchSettings('does-not-exist').length, 0)
-  const source = fs.readFileSync('src/renderer/src/views/SettingsView.vue', 'utf8') + fs.readFileSync('src/renderer/src/components/HomeLayoutEditor.vue', 'utf8')
+  const settings = fs.readFileSync('src/renderer/src/views/SettingsView.vue', 'utf8')
+  const children = ['HomeLayoutEditor', 'AppearanceThemeCard']
+  // A catalog destination in an orphan component must not satisfy this reachability check.
+  for (const component of children) {
+    assert(settings.includes(`import ${component} from '../components/${component}.vue'`))
+    assert(settings.includes(`<${component}`), `${component} must be rendered by SettingsView`)
+  }
+  assert.match(settings, /<AppearanceThemeCard v-show="category === 'appearance'"\s*\/>/)
+  assert.match(settings, /class="background-settings" v-show="category === 'appearance'"><HomeLayoutEditor\s*\/>/)
+  assert.equal(settingsCatalog.find(item => item.id === 'theme')?.category, 'appearance')
+  assert.match(settings, /await selectCategory\(item\.category\)/)
+  assert(settings.includes(`page.value?.querySelector<HTMLElement>('[data-section="' + id + '"]')`))
+  const source = settings + children.map(component => fs.readFileSync(`src/renderer/src/components/${component}.vue`, 'utf8')).join('')
   for (const item of settingsCatalog) {
     assert(settingsCategories.some(c => c.id === item.category))
     assert(source.includes(`data-section="${item.id}"`), `Missing actual setting: ${item.id}`)

@@ -22,7 +22,8 @@ import { downloadAll } from './download'
 import { readVersionJson } from './versions'
 import { instanceDirectoryState } from './instances'
 import { getSettings } from './settings'
-import { MOD_ZH, ZH_TO_SLUGS } from './community-zh'
+import { MOD_ZH, chineseModSearchTerms, hasExactChineseModName } from './community-zh'
+import { lookupMcmod } from './mcmodSearch'
 import { effectiveCommunityFilter, matchesCommunityFilter, usesCommunityLoader, MODRINTH_RESOURCE_LOADERS, type CommunityFileFilter } from '../../shared/communityPolicy'
 import { communityPageSlots } from './communityPaging'
 import { logScope } from './launcherLog'
@@ -187,17 +188,8 @@ function mapMrVersions(arr: MrVersion[], projectId?: string, retainUnavailable =
 
 // ---------------- CurseForge（官方 API 优先，MCIM 镜像兜底） ----------------
 
-/** 官方 API（需 x-api-key，免费申请见设置页提示）；镜像为无 key 时的降级通道 */
-const CF_OFFICIAL = 'https://api.curseforge.com/v1'
-const CF_MIRROR = 'https://mod.mcimirror.top/curseforge/v1'
-/** 内置默认 Key（卡慕注册的 KAMUCL 官方应用 Key，开箱即用；用户可在设置页换成自己的） */
-import { CF_BUILTIN_KEY } from './curseforgeKey'
-
-/** 当前生效的 CurseForge 通道：有 key（用户设置 > 内置默认）走官方；仅内置失效时才落镜像 */
-export function cfChannel(): { base: string; official: boolean; key: string } {
-  const key = (process.env.KAMUCL_CF_API_KEY || getSettings().curseforgeApiKey?.trim() || CF_BUILTIN_KEY).trim()
-  return key ? { base: CF_OFFICIAL, official: true, key } : { base: CF_MIRROR, official: false, key: '' }
-}
+import { cfChannel, CF_MIRROR } from './curseforgeChannel'
+export { cfChannel } from './curseforgeChannel'
 
 const CF_CLASS_ID: Record<CommunityKind, number> = {
   mod: 6,
@@ -338,42 +330,131 @@ function mapCfFiles(files: CfFile[], projectId: string): CommunityFile[] {
 
 // ---------------- 对外：搜索 / 文件列表 ----------------
 
-const hasChinese = (s: string): boolean => /[一-鿿]/.test(s)
-
-// ---------------- 中文名检索（community-zh 映射表） ----------------
-
-/** 中文关键词反查 slug：中文名包含关键词的映射项（取前 5 个 slug） */
-function zhKeywordToSlugs(keyword: string): string[] {
-  const kw = keyword.trim().toLowerCase()
-  if (!kw || !hasChinese(kw)) return []
-  const out: string[] = []
-  for (const [zh, slugs] of Object.entries(ZH_TO_SLUGS)) {
-    if (zh.includes(kw)) out.push(...slugs)
-    if (out.length >= 5) break
-  }
-  return [...new Set(out)].slice(0, 5)
-}
-
 /** 给搜索结果标题加中文名前缀（slug 命中映射表时） */
 function withZhTitle(list: CommunityResult[]): CommunityResult[] {
   return list.map((r) => {
     const originalTitle = r.originalTitle ?? r.title
     const zh = MOD_ZH[r.slug]
-    if (zh && !r.title.startsWith(zh)) {
+    if (zh && !r.title.startsWith(zh) && !(r.originalTitle && r.title !== r.originalTitle)) {
       return { ...r, originalTitle, title: `${zh} | ${r.title}` }
     }
     return { ...r, originalTitle }
   })
 }
 
-const sourceCounts = new Map<string, { total: number; time: number }>()
-const providerSearch = (source: CommunitySource, q: CommunityQuery) => source === 'modrinth' ? mrSearch(q) : cfSearch(q)
+interface SourceCount { total: number; time: number; revision: object }
+const sourceCounts = new Map<string, SourceCount>()
+// Only the most recently started read for a key owns its cache mutation. A
+// response from an older request must neither restore a stale count nor erase
+// a newer successful refresh. Entries here exist only while reads are pending.
+const sourceCountReads = new Map<string, object>()
+const rawProviderSearch = (source: CommunitySource, q: CommunityQuery) => source === 'modrinth' ? mrSearch(q) : cfSearch(q)
+const aliasCatalogs = new Map<string, { time: number; items: CommunityResult[]; warnings: string[] }>()
+async function providerSearch(source: CommunitySource, q: CommunityQuery): Promise<CommunitySearchPage> {
+  let builtin: CommunitySearchPage | undefined
+  const chinese = q.kind === 'mod' && /[一-鿿]/.test(q.keyword)
+  if (chinese && hasExactChineseModName(q.keyword)) {
+    builtin = await builtinProviderSearch(source, q)
+    if (builtin.total) return builtin
+    // Repository slugs can differ by platform. A known local name with no
+    // exact identity may still be resolved through explicit encyclopedia links.
+  }
+  if (chinese) {
+    const key = JSON.stringify({ ...q, source, offset: 0, limit: 0, mcmod: true })
+    let catalog = aliasCatalogs.get(key)
+    if (!catalog || Date.now() - catalog.time >= 60_000) {
+      const encyclopedia = await lookupMcmod(q.keyword)
+      if (!encyclopedia.entries.length) {
+        const page = builtin ?? await builtinProviderSearch(source, q)
+        return { ...page, warnings: [...(page.warnings ?? []), ...encyclopedia.warnings] }
+      }
+      // Keep domestic projects returned for the user's original query. MC百科
+      // provides an identity bridge, never a replacement download repository.
+      let original: CommunitySearchPage | undefined, originalError: unknown
+      try { original = await rawProviderSearch(source, { ...q, offset: 0, limit: 50 }) }
+      catch (error) { originalError = error }
+      const items = [...(original?.items ?? [])], warnings = [...(original?.warnings ?? []), ...encyclopedia.warnings]
+      if (!original) warnings.push('原中文关键词查询失败，当前仅显示已核对来源标识的百科关联项目；可重试。')
+      const linkedIdentities = [...new Map(encyclopedia.entries.flatMap(entry => entry.projects.filter(link => link.source === source).map(link => [link.slug, { ...link, title: entry.title } ] as const))).values()]
+      const identities = linkedIdentities.slice(0, 10)
+      if (linkedIdentities.length > 10) warnings.push('百科条目关联的来源项目较多，本次仅核对前 10 项；请使用完整中文名缩小范围。')
+      if (!identities.length) warnings.push(`MC百科条目未提供 ${source === 'modrinth' ? 'Modrinth' : 'CurseForge'} 项目链接，已保留原中文结果；可切换来源。`)
+      let cursor = 0, providerSucceeded = !!original
+      await Promise.all(Array.from({ length: Math.min(2, identities.length) }, async () => {
+        while (cursor < identities.length) {
+          const index = cursor++, identity = identities[index]
+          try {
+            const page = await rawProviderSearch(source, { ...q, keyword: identity.slug, offset: 0, limit: 50 })
+            providerSucceeded = true
+            // Do not pick similarly named forks, add-ons or the first search hit.
+            for (const item of page.items.filter(item => item.slug.toLowerCase() === identity.slug)) {
+              const originalTitle = item.originalTitle ?? item.title
+              items.push({ ...item, originalTitle, title: `${identity.title} | ${originalTitle}` })
+            }
+          } catch { warnings.push(`“${identity.title}”的 ${source === 'modrinth' ? 'Modrinth' : 'CurseForge'} 项目查询失败，可重试；未使用同名项目替代。`) }
+        }
+      }))
+      if (!providerSucceeded) throw originalError ?? new Error('社区来源查询失败，请稍后重试')
+      if (encyclopedia.entries.length) warnings.push('MC百科中文名称关联：仅使用百科条目明确链接且当前版本／加载器筛选匹配的来源项目。')
+      if ((original?.total ?? 0) > 50) warnings.push('原中文关键词匹配较多，本次百科关联合并前 50 项；请缩小关键词查看其他结果。')
+      // On an encyclopedia outage preserve the existing alias path and its full
+      // provider pagination; a failure must not turn into a cached empty match.
+      catalog = { time: Date.now(), items: [...new Map(items.map(item => [`${item.source}:${item.projectId}`, item])).values()], warnings: [...new Set(warnings)] }
+      if (aliasCatalogs.size >= 12) aliasCatalogs.delete(aliasCatalogs.keys().next().value!)
+      if (!encyclopedia.warnings.length && !warnings.some(warning => warning.includes('查询失败'))) aliasCatalogs.set(key, catalog)
+    }
+    return { items: catalog.items.slice(q.offset, q.offset + q.limit), total: catalog.items.length, offset: q.offset, limit: q.limit, warnings: catalog.warnings }
+  }
+  return builtinProviderSearch(source, q)
+}
+async function builtinProviderSearch(source: CommunitySource, q: CommunityQuery): Promise<CommunitySearchPage> {
+  const terms = q.kind === 'mod' ? chineseModSearchTerms(q.keyword) : []
+  if (!terms.length) return rawProviderSearch(source, q)
+  // Keep the user's original Chinese matches even when an alias succeeds.
+  // Alias searches contribute only their explicit slug; a first hit or similarly
+  // named fork is never promoted to the intended project's identity.
+  const key = JSON.stringify({ ...q, source, offset: 0, limit: 0 })
+  let catalog = aliasCatalogs.get(key)
+  if (!catalog || Date.now() - catalog.time >= 60_000) {
+    const searches = [...new Set([q.keyword, ...terms])]
+    const pages: CommunitySearchPage[] = []
+    let cursor = 0, successes = 0
+    const failures: unknown[] = []
+    await Promise.all(Array.from({ length: Math.min(2, searches.length) }, async () => {
+      while (cursor < searches.length) {
+        const index = cursor++, keyword = searches[index]
+        try {
+          const first = await rawProviderSearch(source, { ...q, keyword, offset: 0, limit: 50 })
+          successes++
+          let second: CommunitySearchPage | undefined
+          const warnings: string[] = []
+          if (first.total > 50) {
+            try { second = await rawProviderSearch(source, { ...q, keyword, offset: 50, limit: 50 }) }
+            catch { warnings.push(`“${keyword}”的后续结果查询失败，已保留已读取项目；可重试。`) }
+          }
+          const items = [...first.items, ...(second?.items ?? [])]
+          if (first.total > 100) warnings.push(`“${keyword}”匹配较多，本次中文别名检索仅核对前 100 项；可用具体英文名搜索完整结果。`)
+          pages[index] = { ...first, items: keyword === q.keyword ? items : items.filter(item => item.slug.toLowerCase() === keyword.toLowerCase()), warnings }
+        } catch (error) {
+          failures.push(error)
+          pages[index] = { items: [], total: 0, offset: 0, limit: 0, warnings: [keyword === q.keyword ? '原中文关键词查询失败，当前仅显示已核对来源标识的别名项目；可重试。' : `中文别名“${keyword}”查询失败，已保留其他已读取结果；可重试。`] }
+        }
+      }
+    }))
+    if (!successes) throw failures[0] ?? new Error('社区来源查询失败，请稍后重试')
+    const items = [...new Map(pages.flatMap(page => page.items).map(item => [`${item.source}:${item.projectId}`, item])).values()]
+    catalog = { time: Date.now(), items, warnings: [...new Set([`中文别名检索：${q.keyword} → ${terms.join('、')}；保留原中文结果，仅补充来源标识完全匹配的项目。`, ...pages.flatMap(page => page.warnings ?? [])])] }
+    if (aliasCatalogs.size >= 12) aliasCatalogs.delete(aliasCatalogs.keys().next().value!)
+    if (!catalog.warnings.some(warning => warning.includes('查询失败'))) aliasCatalogs.set(key, catalog)
+  }
+  return { items: catalog.items.slice(q.offset, q.offset + q.limit), total: catalog.items.length, offset: q.offset, limit: q.limit, warnings: catalog.warnings }
+}
 
 /** 分页总数来自源站；中文别名也走相同筛选请求，禁止把未筛选项目塞回结果。 */
 export async function communitySearchPage(input: CommunityQuery): Promise<CommunitySearchPage> {
   const q: CommunityQuery = {
     ...input, ...effectiveCommunityFilter(input),
-    keyword: (input.kind === 'mod' ? zhKeywordToSlugs(input.keyword)[0] : undefined) ?? input.keyword.trim(),
+    keyword: input.keyword.trim(),
     offset: Math.max(0, Math.floor(input.offset || 0)),
     limit: Math.max(1, Math.min(50, Math.floor(input.limit || 20)))
   }
@@ -382,35 +463,86 @@ export async function communitySearchPage(input: CommunityQuery): Promise<Commun
     return { ...page, items: withZhTitle(page.items) }
   }
   const sources: CommunitySource[] = ['modrinth', 'curseforge']
+  const warnings: string[] = []
+  const countKey = (source: CommunitySource) => JSON.stringify({ ...q, source, offset: 0, limit: 1 })
   const counts = await Promise.allSettled(sources.map(async source => {
-    const key = JSON.stringify({ ...q, source, offset: 0, limit: 1 })
+    const key = countKey(source)
     const cached = sourceCounts.get(key)
-    if (q.offset > 0 && cached && Date.now() - cached.time < 60_000) return cached.total
-    const page = await providerSearch(source, { ...q, source, offset: 0, limit: 1 })
-    if (sourceCounts.size > 100) sourceCounts.clear()
-    sourceCounts.set(key, { total: page.total, time: Date.now() })
-    return page.total
+    if (q.offset > 0 && cached && Date.now() - cached.time < 60_000) return cached
+    const revision = {}
+    sourceCountReads.set(key, revision)
+    // Invalidate before awaiting: a concurrent page must not reuse the prior
+    // healthy snapshot while this explicit refresh is still unresolved.
+    sourceCounts.delete(key)
+    try {
+      const page = await providerSearch(source, { ...q, source, offset: 0, limit: 1 })
+      warnings.push(...(page.warnings ?? []))
+      const value = { total: page.total, time: Date.now(), revision }
+      if (sourceCountReads.get(key) === revision) {
+        if (sourceCounts.size > 100) sourceCounts.clear()
+        if (!page.warnings?.length) sourceCounts.set(key, value)
+        else sourceCounts.delete(key)
+      }
+      return value
+    } catch (error) {
+      if (sourceCountReads.get(key) === revision) sourceCounts.delete(key)
+      throw error
+    } finally {
+      if (sourceCountReads.get(key) === revision) sourceCountReads.delete(key)
+    }
   }))
   if (counts.every(r => r.status === 'rejected')) throw (counts[0] as PromiseRejectedResult).reason
-  const warnings: string[] = []
   const totals = { modrinth: 0, curseforge: 0 }
   counts.forEach((result, i) => {
-    if (result.status === 'fulfilled') totals[sources[i]] = result.value
+    if (result.status === 'fulfilled') totals[sources[i]] = result.value.total
     else warnings.push(`${sources[i] === 'modrinth' ? 'Modrinth' : 'CurseForge'} 暂不可用，当前仅统计另一来源；可重试或切换来源。`)
   })
+  const invalidateObservedCount = (source: CommunitySource) => {
+    const observed = counts[sources.indexOf(source)]
+    if (observed.status === 'fulfilled' && sourceCounts.get(countKey(source))?.revision === observed.value.revision) sourceCounts.delete(countKey(source))
+  }
+  const failures = new Map<CommunitySource, unknown>()
+  counts.forEach((result, i) => { if (result.status === 'rejected') failures.set(sources[i], result.reason) })
+  const pages = new Map<CommunitySource, { offset: number; limit: number; items: CommunityResult[] }>()
+  const covers = (source: CommunitySource, own: Array<{ index: number }>) => {
+    const page = pages.get(source)
+    return !own.length || !!page && own[0].index >= page.offset && own.at(-1)!.index < page.offset + page.limit
+  }
+  // A provider can fail after its count succeeded. Keep the other provider's
+  // results, then replan against the actual available totals. Fetch a different
+  // surviving range when necessary; never fill a new page with old offsets.
+  for (let round = 0; round <= sources.length; round++) {
+    const planned = communityPageSlots(totals, q.offset, q.limit)
+    const needed = sources.map(source => ({ source, own: planned.filter(slot => slot.source === source) })).filter(row => !covers(row.source, row.own))
+    if (!needed.length) break
+    const fetched = await Promise.allSettled(needed.map(async ({ source, own }) => {
+      try {
+        const page = await providerSearch(source, { ...q, source, offset: own[0].index, limit: own.length })
+        warnings.push(...(page.warnings ?? []))
+        if (page.warnings?.length || page.total !== totals[source]) invalidateObservedCount(source)
+        return page
+      } catch (error) { invalidateObservedCount(source); throw error }
+    }))
+    fetched.forEach((result, index) => {
+      const { source, own } = needed[index]
+      if (result.status === 'fulfilled') {
+        totals[source] = result.value.total
+        pages.set(source, { offset: own[0].index, limit: own.length, items: result.value.items })
+      } else {
+        totals[source] = 0; pages.delete(source); failures.set(source, result.reason)
+        warnings.push(`${source === 'modrinth' ? 'Modrinth' : 'CurseForge'} 结果读取失败，当前仅统计另一来源；可重试或切换来源。`)
+      }
+    })
+    if (failures.size === sources.length) throw failures.values().next().value
+  }
   const slots = communityPageSlots(totals, q.offset, q.limit)
-  const pages = await Promise.all(sources.map(async source => {
-    const own = slots.filter(slot => slot.source === source)
-    if (!own.length) return { source, offset: 0, items: [] as CommunityResult[] }
-    const page = await providerSearch(source, { ...q, source, offset: own[0].index, limit: own.length })
-    return { source, offset: own[0].index, items: page.items }
-  }))
+  if (sources.some(source => !covers(source, slots.filter(slot => slot.source === source)))) throw new Error('社区来源结果在翻页时持续变化，请重新搜索后重试。')
   const items = slots.flatMap(slot => {
-    const page = pages.find(p => p.source === slot.source)!
+    const page = pages.get(slot.source)!
     const item = page.items[slot.index - page.offset]
     return item ? [item] : []
   })
-  return { items: withZhTitle(items), total: totals.modrinth + totals.curseforge, offset: q.offset, limit: q.limit, warnings }
+  return { items: withZhTitle(items), total: totals.modrinth + totals.curseforge, offset: q.offset, limit: q.limit, warnings: [...new Set(warnings)] }
 }
 
 import { favoriteIconUrl } from '../../shared/modFavorites'

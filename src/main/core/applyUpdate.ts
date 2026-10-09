@@ -5,10 +5,12 @@ import { randomUUID } from 'node:crypto'
 import { atomicUpdateJson, buildUpdaterScript, readUpdateTransaction, updateMarker, validateUpdatePayload, type UpdateTransaction, type UpdaterScriptSpec } from './updateTransaction'
 export { buildUpdaterScript } from './updateTransaction'
 import { app } from 'electron'
-import type { LocalUpdateCheck, ProgressEvent, ReleaseInfo, Settings, UpdateStateInfo } from '../../shared/types'
+import type { LocalUpdateCheck, ProgressEvent, ReleaseInfo, UpdateStateInfo } from '../../shared/types'
 import { IPC_EVENT } from '../../shared/types'
 import { compareSemver } from '../../shared/semver'
-import { downloadAll } from './download'
+import { downloadUpdatePayload } from './updateDownload'
+import { updateDownloadCandidates, type UpdateSourceSettings } from './updateSources'
+export { updateDownloadCandidates } from './updateSources'
 import { finishTask, registerTask } from './tasks'
 import { currentVersion, fetchSha256Sums, sha256File } from './selfUpdate'
 import { logScope } from './launcherLog'
@@ -217,7 +219,7 @@ export function isUpdateDownloading(): boolean {
  * 自动安装模式入口：静默后台下载；完成后写待安装状态并发 updateReady，
  * 下次用户启动时应用，本次退出不执行替换或重启。
  */
-export function startAutoUpdate(release: ReleaseInfo, settings: Pick<Settings, 'updateSource' | 'updateMirrorUrl'>): void {
+export function startAutoUpdate(release: ReleaseInfo, settings: UpdateSourceSettings): void {
   if (!updateSupported()) return
   if (autoDownloadingVersion) return
   autoDownloadingVersion = release.version
@@ -245,16 +247,6 @@ export async function applyPendingIfAny(): Promise<boolean> {
 
 // ---------------- 下载源 ----------------
 
-/** 按设置构造下载候选 URL 列表（auto=直连优先镜像兜底；direct=仅直连；mirror=仅镜像） */
-export function updateDownloadCandidates(assetUrl: string, settings: Pick<Settings, 'updateSource' | 'updateMirrorUrl'>): string[] {
-  const mirrorPrefix = (settings.updateMirrorUrl || 'https://ghproxy.net/').trim()
-  const mirrored = mirrorPrefix ? mirrorPrefix + assetUrl : ''
-  const source = settings.updateSource ?? 'auto'
-  if (source === 'direct') return [assetUrl]
-  if (source === 'mirror') return mirrored ? [mirrored] : [assetUrl]
-  return mirrored ? [assetUrl, mirrored] : [assetUrl]
-}
-
 // ---------------- 下载（接入下载中心） ----------------
 
 export interface UpdateDownloadHandle {
@@ -268,7 +260,7 @@ let activeDownload: { version: string; handle: UpdateDownloadHandle } | null = n
  * 后台下载更新包：注册下载中心任务（分阶段进度/可取消/断点续传/多源换源），
  * 完成后强制 SHA256 校验。低速 30s 通过 emit 发一次内测群提示。
  */
-export function startUpdateDownload(release: ReleaseInfo, settings: Pick<Settings, 'updateSource' | 'updateMirrorUrl'>, mode: 'upgrade' | 'rollback'): UpdateDownloadHandle {
+export function startUpdateDownload(release: ReleaseInfo, settings: UpdateSourceSettings, mode: 'upgrade' | 'rollback'): UpdateDownloadHandle {
   if (process.platform === 'darwin' && !macUpdateSupported()) throw new Error('请将 KAMUCL.app 拖入可写的应用程序目录后再更新')
   if (!trustedUpdateRelease(release)) throw new Error('更新来源无效，请重新检查官方版本')
   if (activeDownload) {
@@ -284,18 +276,18 @@ export function startUpdateDownload(release: ReleaseInfo, settings: Pick<Setting
   const dest = path.join(updateDir, release.assetName || `KAMUCL-${release.version}.exe`)
 
   const task = registerTask(`${mode === 'rollback' ? '回退' : '下载'}启动器 v${release.version}`, 'download')
-  const [url, ...alternates] = updateDownloadCandidates(release.assetUrl, settings)
+  const urls = updateDownloadCandidates(release.assetUrl, settings)
   let slowSince: number | null = null
   let slowHintSent = false
 
   const done = (async () => {
     try {
       // 先取校验值（安全优先：取不到不开始下载）
-      const sums = await fetchSha256Sums(release.assetUrl)
+      const sums = await fetchSha256Sums(release.assetUrl, undefined, task.controller.signal)
       const expected = sums?.get(release.assetName) ?? sums?.get(path.basename(dest)) ?? null
       if (!expected) throw new Error('无法获取更新包校验值（SHA256SUMS），已中止（安全考虑）')
-      await downloadAll(
-        [{ url, urls: alternates, dest, sha256: expected, size: release.assetSize || undefined }],
+      await downloadUpdatePayload(
+        { urls, dest, sha256: expected, size: release.assetSize || undefined },
         (_done, _total, bps, detail) => {
           const received = detail.bytesDone, total = detail.bytesTotal ?? 0
           const now = Date.now()
@@ -321,15 +313,16 @@ export function startUpdateDownload(release: ReleaseInfo, settings: Pick<Setting
             slowSince = null
           }
         },
-        8, 'official', task.controller.signal
+        task.controller.signal
       )
       // 完整性校验：SHA256 不一致即失败（删除文件防误用）
-      const actual = await sha256File(dest)
+      const actual = await sha256File(dest, task.controller.signal)
       if (actual !== expected) {
         fs.rmSync(dest, { force: true })
         throw new Error(`更新包校验失败（SHA256 不一致），已删除文件。期望 ${expected.slice(0, 12)}… 实际 ${actual.slice(0, 12)}…`)
       }
       updateLog.info(`更新包下载完成并校验通过：${dest}`)
+      task.controller.signal.throwIfAborted()
       await writePendingUpdate(release, dest, expected, mode)
       emit(IPC_EVENT.taskDone, { taskId: task.id, ok: true })
     } catch (e) {

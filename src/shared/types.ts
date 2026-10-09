@@ -369,6 +369,8 @@ export type VersionCategoryAction =
   | { type: 'assign'; target: { id: string; folder: string }; categoryId: string }
 
 export interface Settings {
+  /** Fit the launcher to available desktop space only when explicitly enabled. */
+  uiWindowAutoFit?: boolean
   /** Explicit reduction is additive to the operating system preference; absent means follow system. */
   reduceMotion?: boolean
   visualDesign?: import('./visualDesign').VisualDesign
@@ -392,6 +394,8 @@ export interface Settings {
   memoryOrganizeBeforeLaunch?: boolean
   jvmArgs: string
   resolution: GameResolution
+  /** Windows: remember the last observed normal game client size on clean exit; default off. */
+  rememberGameWindowSize?: boolean
   mirror: 'official' | 'bmclapi'
   /** 跨所有任务的 HTTP 并发上限。 */
   downloadThreads: number
@@ -434,6 +438,8 @@ export interface Settings {
   updateSource?: 'auto' | 'direct' | 'mirror'
   /** 自定义镜像前缀（拼接在 GitHub 文件 URL 前，如 https://ghproxy.net/） */
   updateMirrorUrl?: string
+  /** Additional update mirrors; the old singular field remains readable. */
+  updateMirrorUrls?: string[]
   /** 内测群号覆盖（免打包临时改；默认取 shared/branding.ts 的 QQ_GROUP_NUMBER） */
   qqGroupNumber?: string
   /** CurseForge 官方 API Key（console.curseforge.com 免费申请）；留空走 MCIM 镜像兜底 */
@@ -645,6 +651,8 @@ export interface SkinHistoryEntry extends SkinHistoryItem {
 }
 export interface ParallelStage {
   id: string
+  /** Semantic child phase, so nested preparation does not hide Java→installer transitions. */
+  stage?: string
   label: string
   text: string
   progress: number
@@ -661,6 +669,8 @@ export interface ManualModpackFile {
 }
 export interface ManualModpackRequest { token: string; files: ManualModpackFile[] }
 export interface ProgressEvent {
+  /** Optional renderer-generated correlation ID; separates simultaneous MOD dialogs. */
+  operationId?: string
   manualFiles?: ManualModpackRequest | null
   /** Concurrent preparation lanes; absent once the task enters its final commit stage. */
   parallelStages?: ParallelStage[]
@@ -691,6 +701,7 @@ export interface ProgressEvent {
 }
 
 export interface LaunchState {
+  savedWindowSize?: { scope: 'global' | 'instance'; previous: GameResolution; resolution: GameResolution }
   launchId?: string
   versionId?: string
   folder?: string
@@ -876,6 +887,7 @@ export const IPC = {
   defaultPacksRemove: 'defaultPacks:remove',
   defaultPacksMove: 'defaultPacks:move',
   defaultPacksSetEnabled: 'defaultPacks:setEnabled',
+  defaultPacksApply: 'defaultPacks:apply',
   // 桥接 MOD 实时配置面板（游戏目录 .kamucl-bridge.json 发现 + token 校验，仅本机）
   bridgeStatus: 'bridge:status', // (versionId: string) => BridgeStatus
   bridgeManifest: 'bridge:manifest', // (versionId: string) => { protocol, params: BridgeParam[] }
@@ -905,9 +917,11 @@ export const IPC = {
   tasksPause: 'tasks:pause', // (taskId: string) => boolean
   tasksResume: 'tasks:resume', // (taskId: string) => boolean
 
-  // 皮肤/披风（均需当前选中账号为微软正版账号）
+  // 皮肤/披风；离线 PNG 仅保存到当前本机账号
   skinProfile: 'skin:profile', // () => ProfileSkins  拉取当前账号皮肤/披风档案
   skinUpload: 'skin:upload', // (filePath: string, variant: SkinVariant) => ProfileSkins  上传并返回最新档案
+  skinOfflineApply: 'skin:offlineApply', // (filePath, variant, capturedAccountId) => ProfileSkins
+  skinOfflineReset: 'skin:offlineReset', // (capturedAccountId) => ProfileSkins
   skinCape: 'skin:cape', // (capeId: string | null) => ProfileSkins  激活/卸下披风
   skinHistory: 'skin:history', // () => SkinHistoryEntry[]  历史皮肤（含 dataUrl 缩略）
   skinHistoryDelete: 'skin:historyDelete', // (id: string) => SkinHistoryEntry[]
@@ -919,6 +933,7 @@ export const IPC = {
   appOpenDir: 'app:openDir', // (rel?: string) => void  用系统资源管理器打开目录
   fsImportResources: 'fs:importResources',
   fsList: 'fs:list', // (rel: string) => FsEntry[]
+  fsPath: 'fs:path', // (rel: string, folder?: string) => string; backend-resolved native path
   fsRemove: 'fs:remove', // (rel: string, name: string) => FsEntry[]
   fsToggleDisable: 'fs:toggleDisable', // (rel: string, name: string) => FsEntry[] —— 模组禁用/启用（.jar ↔ .jar.disabled）
 
@@ -1050,7 +1065,7 @@ export interface ModRequirement { id: string; range: string }
 export interface ModInstallPlan {
   id: string
   target: InstalledVersion
-  files: Array<{ name: string; version: string; dependency: boolean; fileName: string }>
+  files: Array<{ name: string; version: string; dependency: boolean; fileName: string; source?: CommunitySource; projectId?: string }>
   missing: string[]
   warnings: string[]
 }
@@ -1224,6 +1239,8 @@ export interface ModInfo {
   /** 前置依赖 mod id 列表 */
   dependencies: string[]
   requirements?: ModRequirement[]
+  /** Actual JVM dependency/features from enabled JARs, including bundled mods. */
+  javaRequirements?: Array<{ loader: LoaderName; range: string; source: string; exclude?: boolean }>
   /** Multi-loader jars may contain several independent metadata descriptors. */
   variants?: Array<{ loader: LoaderName; mcRange: string; loaderRange?: string; requirements?: ModRequirement[] }>
   provides?: Array<{ id: string; version: string }>

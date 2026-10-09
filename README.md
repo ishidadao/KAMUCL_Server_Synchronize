@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/github/package-json/v/ishidadao/KAMUCL_Update?filename=package.json&color=c77dff&style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ecae6?style=flat-square" alt="platform">
-  <img src="https://img.shields.io/badge/license-MIT-ffb4a2?style=flat-square" alt="license">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-See%20LICENSE-ffb4a2?style=flat-square" alt="license: see LICENSE"></a>
   <img src="https://img.shields.io/badge/Electron-44.3.0-9be564?style=flat-square" alt="electron">
   <a href="https://space.bilibili.com/9596327"><img src="https://img.shields.io/badge/Bilibili-作者主页-00AEEC?style=flat-square&logo=bilibili&logoColor=white" alt="Bilibili 作者主页"></a>
 </p>
@@ -121,6 +121,8 @@ curl --fail --output /dev/null "$object_url"
 
 ## 🌸 功能一览
 
+KAMUCL 基于 Electron 44.3.0、Vue 和 Three.js。当前交付 Windows x64 和 macOS ARM64；其他平台工程仍在仓库中，验收范围以对应 Release 为准。
+
 | 模块 | 说明 |
 | --- | --- |
 | 🎮 游戏实例 | 创建、删除、重命名、隔离实例，单独设置 Java 与启动参数 |
@@ -157,6 +159,8 @@ curl --fail --output /dev/null "$object_url"
 
 ## 🚀 快速开始
 
+请从 [GitHub Releases](https://github.com/kamubaba-i/KAMUCL/releases) 下载对应平台的成品，并使用该版本的 `SHA256SUMS.txt` 核对文件。源码包不是可直接双击的应用。
+
 ### 直接运行（Windows）
 
 Windows 便携版是单个 EXE，文件名会跟随 `package.json` 的版本号：
@@ -165,9 +169,21 @@ Windows 便携版是单个 EXE，文件名会跟随 `package.json` 的版本号�
 release/KAMUCL-<version>.exe
 ```
 
-首次启动 Minecraft 前，请准备 Windows 10/11 64 位或支持的 macOS、与目标 Minecraft 版本匹配的 Java（现代版本通常需要 Java 17+）和网络连接。Windows ZIP 包解压后需保留同目录下的全部文件。
+首次启动 Minecraft 前，请准备 Windows 10/11 64 位、与目标 Minecraft 版本匹配的 Java（现代版本通常使用 Java 17 或 21）和网络连接。Windows ZIP 包解压后需保留同目录下的全部文件。复制可执行文件不会自动复制用户配置目录中的账号、图片、收藏和游戏数据；分享整个文件夹前，请检查是否另行放入了用户数据。
+
+### 直接运行（Mac ARM64）
+
+要求 macOS 13 或更新版本及 Apple Silicon。打开 ARM64 DMG，把 `KAMUCL.app` 拖入“应用程序”，推出镜像后运行；或解压 ARM64 ZIP，把应用移入“应用程序”再运行。不要选择 Intel 包，也不要在只读 DMG 内执行更新。
+
+当前包使用 ad-hoc 签名，未做 Apple Developer ID 签名与公证；如系统要求确认，请在“系统设置 → 隐私与安全性”按系统提示处理，不需要关闭整个系统的安全检查。
+
+游戏保存到设置中选定的游戏目录。安装到另一个磁盘时，请在“设置 → 游戏 → 游戏文件夹”添加并设置默认目录，并在安装确认页核对实际目标。离线账号不会获得正版在线服务器的验证权限。
+
+每个版本的真实验证范围、平台差异及尚未覆盖项目在 Release 和交付文档中独立说明；构建成功不等同于所有第三方模组、游戏版本和图形设备都兼容。
 
 ### 从源码运行
+
+安装 Node.js 24、完整 JDK 17 或更新版本以及 Git；Windows 原生辅助程序需要 .NET SDK，macOS 原生辅助程序需要 Xcode Command Line Tools。确认 `node`、`npm`、`javac` 和 `jar` 都在 PATH 中。
 
 ```powershell
 git clone https://github.com/ishidadao/KAMUCL_Update.git
@@ -175,6 +191,8 @@ cd KAMUCL_Update
 npm ci
 npm run dev
 ```
+
+行为修改需保留旧设置、收藏、图片和实例；用户的整合包、存档与账号凭据不能进入公开源码。构建与验证命令、代码分层、平台适配、测试证据和发布流程见[开发指南](docs/DEVELOPMENT.md)。
 
 ## 🧰 开发与构建
 
@@ -185,19 +203,22 @@ npm run dev
 | `npm test` | 运行自动化测试 |
 | `npm run dist` | 构建 Windows 便携版与 ZIP |
 | `npm run dist:win` | 构建 Windows 便携版与 ZIP |
-| `npm run dist:mac` | 构建 macOS ZIP |
-| `npm run dist:all` | 构建全部已配置平台 |
+| `npm run dist:mac` | 在原生 Mac 上构建 APP、ZIP 和 DMG |
+| `npm run dist:all` | 构建当前宿主支持的已配置平台；不代表所有平台已经验收 |
 | `npm run license:check` | 校验第三方依赖许可证文件 |
 
 只生成 Windows 单文件 EXE：
 
 ```powershell
-npm install
+npm ci
+node scripts/build-bridge.cjs
 npm run build
 npx electron-builder --win portable
 ```
 
-产物输出到 `release/`。构建配置已启用最大压缩、仅保留中英文语言包，并排除 source map。
+产物输出到 `release/`。构建配置已启用最大压缩、仅保留中英文语言包，并排除 source map。完整生产构建包括主进程、Preload、渲染器、原生与离线皮肤辅助程序；单独渲染器编译不替代完整构建。本批锁定 Electron 44.3.0，不应通过手动换版本掩盖平台问题。
+
+当前 Mac 发布在 Apple Silicon 上执行 `node scripts/pack-mac.mjs arm64 --package-only`，再运行对应原生 APP/DMG 和功能验收；跨平台压缩目录不能代替原生 ARM64 构建。具体流程见[开发指南](docs/DEVELOPMENT.md)。
 
 ## 🤝 参与开发
 
@@ -205,7 +226,7 @@ npx electron-builder --win portable
 
 ### 🌉 构建 KAMUCL Bridge
 
-Bridge 是给 Fabric 实例使用的本机桥接 MOD。需要 JDK 17+，并且本机已下载 Fabric Loader 与 Gson 依赖：
+Bridge 是给 Fabric 实例使用的本机桥接 MOD，实例可按需启用；完整生产构建要求提前生成内置 JAR。需要完整 JDK 17+：
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Java\jdk-17'
@@ -238,14 +259,14 @@ publisher/      通用签名更新发布器与 Caddy 部署示例
 <details>
 <summary><b>提示「electron-vite 未找到」</b></summary>
 
-在项目根目录执行 `npm install`，再重新运行命令。
+在项目根目录执行 `npm ci`，再重新运行命令；使用 Node.js 24 和仓库锁定的依赖版本。
 
 </details>
 
 <details>
 <summary><b>构建时提示 Bridge JAR 缺失</b></summary>
 
-设置 `JAVA_HOME` 指向 JDK 17 后，执行 `node scripts/build-bridge.cjs`，再重新构建。
+完整构建要求此 JAR。设置 `JAVA_HOME` 指向完整 JDK，确认 `javac` 和 `jar` 在 PATH 中，然后执行 `node scripts/build-bridge.cjs`。
 
 </details>
 
@@ -265,7 +286,7 @@ publisher/      通用签名更新发布器与 Caddy 部署示例
 
 ## 💌 许可证
 
-本项目基于 [MIT License](LICENSE) 开源。
+项目的 `package.json` 许可字段为 `SEE LICENSE IN LICENSE`。原始 KAMUCL 贡献适用 [LICENSE](LICENSE) 中限定范围的 MIT 条款；第三方代码保留各自许可，请同时阅读 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、`licenses/` 和[对应源码说明](docs/CORRESPONDING_SOURCE.md)，以具体条件为准。
 
 <div align="center">
 

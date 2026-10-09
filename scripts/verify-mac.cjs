@@ -174,11 +174,12 @@ ownedQA.preservingCleanup(async()=>{
  const requiredProofs=['extension-ui-black-orange.json','skin-palette-ui-black-orange.json','mascot-header-ui-black-orange.json','gallery-favorites-ui-black-orange.json','skin-editor-ui-black-orange.json','gallery-favorites-118-ui-black-orange.json','import-routing-119-ui-black-orange.json','selection-ui-119-black-orange.json','kamu-motion-diagnostic-119-cold-black-orange.json','kamu-motion-diagnostic-119-after-header-black-orange.json','kamu-native-recorder-diagnostic-119-'+stage+'-black-orange.json']
  const proofNames=[...requiredProofs,'native-gui-focus-live.json','skin-palette-ready-live.json','skin-palette-preference-live.json','main-inspector-ready-live.json','mascot-header-keyboard-ready-live.json','mascot-header-performance-live.json','mascot-header-performance-diagnostic.json','mascot-header-timeline.json','mascot-header-timeline-raw.json','mascot-header-native-focus-live.json','mascot-header-reverse-live.json','mascot-header-body-sweep-live.json','mascot-header-layout-live.json','mascot-header-visibility-live.json','mascot-header-persistence-live.json','mascot-header-overlap-live.json','mascot-header-screencast-live.json','gallery-favorites-motion-live.json','mascot-slap-117.wav','mascot-sweep-117.webm','mascot-slap-118.wav','mascot-sweep-118.webm','mascot-motion-118.webm','mascot-kamu-119.webm'],shots='release/ui-refinement-black-orange'
  const attemptStarted=Date.now(),fresh=file=>fs.existsSync(file)&&fs.statSync(file).mtimeMs>=attemptStarted
+ const currentEvidence=require('./mac-current-evidence120.cjs'),currentEvidenceBefore=currentEvidence.snapshot(path.resolve('out'))
  {
   requiredProofs.push('skin-palette-state-119-black-orange.json')
   proofNames.push('skin-palette-state-119-black-orange.json','kamu-native-compositor-trace-119.json','kamu-native-compositor-trace-119-events.json','kamu-native-compositor-trace-action.json','kamu-native-compositor-trace-observations.json','kamu-native-compositor-trace-preflight.json','kamu-motion-diagnostic-119-native-trace-black-orange.json')
  }
- let extensionError,complete=false,performanceBenchmark=null,nativeVideoEvidence=null,observerABA119=null
+ let extensionError,complete=false,performanceBenchmark=null,nativeVideoEvidence=null,observerABA119=null,currentEvidenceComplete=false
  try{
   // Explicit opt-in diagnostic-only preflight. It uses a separate process/profile and
   // can never supply acceptance success. Preserve its receipt even if tracing
@@ -228,6 +229,10 @@ ownedQA.preservingCleanup(async()=>{
   // Failed GUI runs must retain their last real layout/visibility snapshot and
   // screenshots in the uploaded artifact, not only in the ephemeral runner.
   const copied=[]
+  const currentOwnedEvidence=currentEvidence.retainCurrent({out:path.resolve('out'),target:extensionProof,before:currentEvidenceBefore,startedAt:attemptStarted})
+  currentEvidenceComplete=currentOwnedEvidence.complete
+  fs.writeFileSync(path.join(extensionProof,'current-owned-evidence.json'),JSON.stringify(currentOwnedEvidence,null,2))
+  if(!currentOwnedEvidence.complete){complete=false;console.warn('Current owned evidence collection failed; original GUI failure is retained',currentOwnedEvidence.errors)}
   for(const name of proofNames)if(fresh(path.join('out',name))){fs.copyFileSync(path.join('out',name),path.join(extensionProof,name==='extension-ui-black-orange.json'?'results.json':name));copied.push(name)}
   const frames=path.join('out',`mascot-${mascotProofRevision}-frames-black-orange`),frameProof=path.join(extensionProof,`mascot-${mascotProofRevision}-frames-black-orange`)
   if(fs.existsSync(frames))for(const name of fs.readdirSync(frames))if((name==='frames.json'||/^frame-\d+\.png$/.test(name))&&fresh(path.join(frames,name))){fs.mkdirSync(frameProof,{recursive:true});fs.copyFileSync(path.join(frames,name),path.join(frameProof,name));copied.push(`mascot-${mascotProofRevision}-frames-black-orange/`+name)}
@@ -268,7 +273,8 @@ ownedQA.preservingCleanup(async()=>{
   }
   const nativeAccepted=complete&&performanceBenchmark?.passed===true&&nativeVideoEvidence?.complete===true&&nativeVideoEvidence.nativeDeliveryBenchmark?.passed===true
   fs.writeFileSync(path.join(extensionProof,'attempt.json'),JSON.stringify({version,arch,stage,complete,functionalComplete:complete,nativeAccepted,performanceBenchmark,performancePassed:performanceBenchmark?.passed??null,nativeVideoEvidence,observerABA119,acceptance:'functional and both original capture benchmarks required; independent visual, interaction and motion review is separate',error:extensionError||null,startedAt:new Date(attemptStarted).toISOString(),executable:exe,copied},null,2))
-  for(const name of fs.readdirSync('out').filter(n=>/^qa-owned-process-119-[0-9a-f-]{36}\.json$/.test(n)))if(fresh(path.join('out',name))){const target=path.join(extensionProof,'owned-process-ledgers',name);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join('out',name),target)}
+  // Current owned lifecycle receipts were retained by the exact UUID collector
+  // above; do not include unrelated/history files solely because mtime is new.
   // One separate, disposable Intel APP diagnostic after archiving the normal
   // result, including its original failure. Diagnostics cannot replace it.
   // Keep workflow permissions/budget and all formal capture assertions intact.
@@ -294,6 +300,7 @@ ownedQA.preservingCleanup(async()=>{
   if(process.env.KAMUCL_MAC_DIAGNOSTICS==='1')require('./native-trace-control-preflight-119.cjs').run({version,arch,stage,ci:process.env.CI,env,exe,extensionProof})
 
  }
+ assert.equal(currentEvidenceComplete,true,'current owned evidence could not be retained; collection errors recorded')
  assert.equal(performanceBenchmark?.passed,true,'original native CDP recording is below its unchanged display capture target; evidence retained')
  assert.equal(nativeVideoEvidence?.complete,true,'original ScreenCaptureKit capture did not complete; failure evidence retained')
  assert.equal(nativeVideoEvidence.nativeDeliveryBenchmark?.passed,true,'original ScreenCaptureKit recording is below its unchanged display target; evidence retained')

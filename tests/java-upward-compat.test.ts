@@ -27,7 +27,7 @@ test('Java selection: pin exact for need < 17; highest >= need for 17+', () => {
   assert.equal(selectJavaByMajor([], 8), null)
 })
 
-test('required major per MC version band: 1.8-1.16.5→8, 1.17→16, 1.18-1.20.4→17, 1.20.5+→21, 26.x/snapshot→21', () => {
+test('known release Java requirements include 26.1 Java 25; unknown snapshots and custom profiles do not default to 21', () => {
   const v = (id: string) => ({ id }) as any
   assert.equal(requiredMajor(v('1.8.9')), 8)
   assert.equal(requiredMajor(v('1.12.2')), 8)
@@ -39,11 +39,13 @@ test('required major per MC version band: 1.8-1.16.5→8, 1.17→16, 1.18-1.20.4
   assert.equal(requiredMajor(v('1.20.4')), 17)
   assert.equal(requiredMajor(v('1.20.5')), 21)
   assert.equal(requiredMajor(v('1.21.1')), 21)
-  assert.equal(requiredMajor(v('26.2')), 21, '26.x new scheme must not fall through to 8')
-  assert.equal(requiredMajor(v('24w14a')), 21, 'snapshot must not fall through to 8')
-  // 显式更高需求仍然生效；无法识别的 id 不会把声明抬到 21
+  assert.equal(requiredMajor(v('26.1')), 25)
+  assert.throws(() => requiredMajor(v('26.2')), /无法确认/)
+  assert.throws(() => requiredMajor(v('24w14a')), /无法确认/)
+  assert.throws(() => requiredMajor(v('my-custom-pack')), /无法确认/)
+  // 无法识别的 id 不会猜 21；已知发行版不被过期 javaVersion 压低
   assert.equal(requiredMajor({ id: 'x', javaVersion: { majorVersion: 25 } } as any), 25)
-  assert.equal(requiredMajor({ id: '1.20.1', javaVersion: { majorVersion: 21 } } as any), 21)
+  assert.equal(requiredMajor({ id: '1.20.1', javaVersion: { majorVersion: 21 } } as any), 17)
   assert.equal(requiredMajor({ id: '愚者', javaVersion: { majorVersion: 17 } } as any), 17)
   // 过期的 majorVersion 17 不能把 1.20.5+ 压回 17
   assert.equal(requiredMajor({ id: '1.20.5', javaVersion: { majorVersion: 17 } } as any), 21)
@@ -52,13 +54,12 @@ test('required major per MC version band: 1.8-1.16.5→8, 1.17→16, 1.18-1.20.4
   assert.equal(requiredMajor({ id: '愚者', _mcVersion: '1.20.1', javaVersion: { majorVersion: 17 } } as any), 17)
 })
 
-test('download prompt wording says "Java N or higher", actual pick is logged with path and version', () => {
+test('launch, installer repair and diagnostics share the compatibility resolver', () => {
   const java = read('src/main/core/java.ts')
-  assert.match(java, /或更高版本/)
-  assert.match(java, /selectJavaByMajor/)
-  // 日志记录实际选用的路径与版本
-  assert.match(java, /向上兼容选用 Java \$\{local\.major\}（\$\{local\.version\}，64位）：\$\{local\.path\}/)
-  // 旧版精确钉死；现代版本仍可向上兼容（不再是唯一的 exact-match-only）
-  assert.match(java, /need < 17/)
-  assert(!java.includes('j.major === need && j.is64Bit'), 'exact-match-only logic must be gone')
+  assert.match(java, /prepareCompatibleJava/)
+  assert.match(read('src/main/core/launch.ts'), /resolveJavaRequirement\(merged, instanceMcVersion/)
+  assert.match(read('src/main/core/instanceDiagnostics.ts'), /resolveJavaRequirement\(merged/)
+  assert.match(read('src/main/core/loaders.ts'), /ensureJava\(baseJson, emit, mc\)/)
+  assert.match(read('src/main/core/javaCompatibility.ts'), /recommendedMajor >= 17/)
+  assert.match(read('src/main/core/javaCompatibility.ts'), /优先精确匹配/)
 })

@@ -223,8 +223,9 @@ export const communityFiles = (
 /** 下载资源文件，返回保存路径；kind=modpack 时自动进入整合包安装流程 */
 export const communityDownload = (
   file: CommunityFile,
-  target: { versionId: string; kind: CommunityKind; folder?: string }
-) => invoke<string>(IPC.communityDownload, file, target)
+  target: { versionId: string; kind: CommunityKind; folder?: string },
+  operationId?: string
+) => invoke<string>(IPC.communityDownload, file, target, operationId)
 
 // ---------------- Java ----------------
 export const listJava = () => invoke<JavaInfo[]>(IPC.javaList)
@@ -237,26 +238,31 @@ export const hideJava = (path: string) => invoke<void>(IPC.javaHide, path)
 
 // ---------------- 皮肤/披风 ----------------
 /** 当前微软账号的皮肤/披风档案 */
-export const getSkinProfile = (refresh = false) => {
-  const request = invoke<ProfileSkins>(IPC.skinProfile, refresh)
+export const getSkinProfile = (refresh = false, accountId?: string) => {
+  const request = invoke<ProfileSkins>(IPC.skinProfile, refresh, accountId)
   return refresh ? refreshSkinAfter(request) : request
 }
 /** 上传皮肤（64×64 PNG），返回最新档案 */
 export const uploadSkin = (filePath: string, variant: SkinVariant) =>
   refreshSkinAfter(invoke<ProfileSkins>(IPC.skinUpload, filePath, variant))
+/** 本地离线皮肤不上传到任何外部服务。 */
+export const applyOfflineSkin = (filePath: string, variant: SkinVariant, accountId: string) =>
+  refreshSkinAfter(invoke<ProfileSkins>(IPC.skinOfflineApply, filePath, variant, accountId))
+export const resetOfflineSkin = (accountId: string) =>
+  refreshSkinAfter(invoke<ProfileSkins>(IPC.skinOfflineReset, accountId))
 /** 激活披风（传 id）/ 卸下披风（传 null），返回最新档案 */
 export const changeCape = (capeId: string | null) => refreshSkinAfter(invoke<ProfileSkins>(IPC.skinCape, capeId))
 /** 历史皮肤（含 dataUrl 缩略图，新→旧） */
-export const getSkinHistory = () => invoke<SkinHistoryEntry[]>(IPC.skinHistory)
+export const getSkinHistory = (accountId?: string) => invoke<SkinHistoryEntry[]>(IPC.skinHistory, accountId)
 /** 删除一条历史，返回最新列表 */
-export const deleteSkinHistory = (id: string) =>
-  invoke<SkinHistoryEntry[]>(IPC.skinHistoryDelete, id)
-export const renameSkinHistory = (id: string, name: string) =>
-  invoke<SkinHistoryEntry[]>(IPC.skinHistoryRename, id, name)
+export const deleteSkinHistory = (id: string, accountId?: string) =>
+  invoke<SkinHistoryEntry[]>(IPC.skinHistoryDelete, id, accountId)
+export const renameSkinHistory = (id: string, name: string, accountId?: string) =>
+  invoke<SkinHistoryEntry[]>(IPC.skinHistoryRename, id, name, accountId)
 /** 用历史记录快速换回，返回最新档案 */
-export const uploadSkinFromHistory = (id: string) =>
-  refreshSkinAfter(invoke<ProfileSkins>(IPC.skinUploadHistory, id))
-/** 当前选中账号的头像数据（微软=皮肤 dataURL / 离线=minotar 头像 dataURL / 无=null） */
+export const uploadSkinFromHistory = (id: string, accountId?: string) =>
+  refreshSkinAfter(invoke<ProfileSkins>(IPC.skinUploadHistory, id, accountId))
+/** 当前选中账号的头像数据（离线读取本地应用皮肤；无本地皮肤返回 null） */
 export const getSkinAvatar = (accountId?: string) => invoke<string | null>(IPC.skinAvatar, accountId)
 
 export const getDirectOverview = () => invoke<import('@shared/directConnect').DirectOverview>(IPC.directOverview)
@@ -304,8 +310,8 @@ export const onManagedServerProgress = (callback: (progress: ManagedServerProgre
 
 // ---------------- MOD 拖入即装 ----------------
 export const getModTargets = () => invoke<{ versions: InstalledVersion[]; errors: string[] }>(IPC.modsTargets)
-export const prepareModInstall = (target: { id: string; folder: string }, input: { paths?: string[]; file?: CommunityFile }) => invoke<ModInstallPlan>(IPC.modsPrepare, target, input)
-export const commitModInstall = (id: string, includeDependencies: boolean) => invoke<string>(IPC.modsCommit, id, includeDependencies)
+export const prepareModInstall = (target: { id: string; folder: string }, input: { paths?: string[]; file?: CommunityFile }, operationId?: string) => invoke<ModInstallPlan>(IPC.modsPrepare, target, input, operationId)
+export const commitModInstall = (id: string, includeDependencies: boolean, operationId?: string) => invoke<string>(IPC.modsCommit, id, includeDependencies, operationId)
 export const discardModInstall = (id: string) => invoke<void>(IPC.modsDiscard, id)
 export const parseMods = (paths: string[]) => invoke<ModInfo[]>(IPC.modsParse, paths)
 export const installMods = (files: string[], targetVersionId: string, folder?: string) =>
@@ -340,6 +346,7 @@ export const pickDefaultResourcePacks = () => invoke<DefaultResourcePack[]>(IPC.
 export const removeDefaultResourcePack = (id: string) => invoke<DefaultResourcePack[]>(IPC.defaultPacksRemove, id)
 export const moveDefaultResourcePack = (id: string, direction: number) => invoke<DefaultResourcePack[]>(IPC.defaultPacksMove, id, direction)
 export const setDefaultResourcePackEnabled = (id: string, enabled: boolean) => invoke<DefaultResourcePack[]>(IPC.defaultPacksSetEnabled, id, enabled)
+export const reapplyDefaultResourcePacks = (folder: string, id: string) => invoke<{ count: number; shared: boolean }>(IPC.defaultPacksApply, folder, id)
 
 // ---------------- 启动器自更新与版本回退 ----------------
 export const checkUpdate = (force = false) => invoke<import('@shared/types').UpdateCheckResult>(IPC.updateCheck, force)
@@ -385,6 +392,7 @@ export const findModCrossDuplicates = (versionIds: string[], folder?: string) =>
 export const openDir = (rel = '', folder?: string) => invoke<void>(IPC.appOpenDir, rel, folder)
 /** 列出游戏目录下某个子目录的文件 */
 export const listFs = (rel: string, folder?: string) => invoke<FsEntry[]>(IPC.fsList, rel, folder)
+export const fsPath = (rel: string, folder?: string) => invoke<string>(IPC.fsPath, rel, folder)
 /** 删除游戏目录下某个子目录中的文件，返回删除后的列表 */
 export const removeFs = (rel: string, name: string, folder?: string) => invoke<FsEntry[]>(IPC.fsRemove, rel, name, folder)
 export const toggleDisableFs = (rel: string, name: string, folder?: string) => invoke<FsEntry[]>(IPC.fsToggleDisable, rel, name, folder)

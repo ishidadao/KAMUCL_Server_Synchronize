@@ -131,7 +131,7 @@ async function pickImage() {
     if (settings) {
       store.settings = settings
       backgroundPreviewFailed.value = false
-      toast('背景已复制并优化到 KAMUCL 资源目录', 'success')
+      toast('已使用新背景图片，原切换列表已替换，自动切换已关闭', 'success')
     }
   } catch (e) {
     toast('导入背景失败：' + errText(e), 'error')
@@ -269,7 +269,7 @@ function setLaunchFit(fit: ImageFit) {
       </div>
       <div class="bg-row">
         <span class="muted bg-label">背景图片</span>
-        <button data-ui="HomeLayoutEditor:600aad811fea" class="btn btn-ghost btn-sm" :disabled="importingBackground || importingBackgroundMulti" @click="pickImage">
+        <button data-ui="HomeLayoutEditor:600aad811fea" class="btn btn-ghost btn-sm" title="用这张图片替换当前列表，并关闭自动切换" :disabled="importingBackground || importingBackgroundMulti" @click="pickImage">
           {{ importingBackground ? '处理中…' : '导入单张…' }}
         </button>
         <button data-ui="HomeLayoutEditor:b5d9e0d6a917" class="btn btn-ghost btn-sm" :disabled="importingBackground || importingBackgroundMulti" @click="pickImageMulti">

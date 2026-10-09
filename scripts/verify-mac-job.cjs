@@ -6,7 +6,7 @@ const [group,arch,stage='app']=process.argv.slice(2),pkg=require('../package.jso
 assert.equal(process.platform,'darwin');assert.equal(process.arch,arch)
 assert.equal(process.env.GITHUB_ACTIONS,'true','native job driver requires a disposable runner')
 fs.mkdirSync(path.resolve('out'),{recursive:true})
-assert(['ui','parity','game','startup','tools','update','gpu-diagnostic','download-location','favorites'].includes(group));assert(['app','dmg'].includes(stage))
+assert(['ui','parity','game','startup','tools','update','gpu-diagnostic','download-location','favorites','batch120'].includes(group));assert(['app','dmg'].includes(stage))
 const proof=path.resolve(`release/mac-job-${arch}-${stage}-${group}`);fs.mkdirSync(proof,{recursive:true})
 const receipt={version:pkg.version,arch,stage,group,commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),startedAt:new Date().toISOString(),complete:false,steps:[]}
 const save=()=>fs.writeFileSync(path.join(proof,'job.json'),JSON.stringify(receipt,null,2))
@@ -40,7 +40,7 @@ let mount,attached=false,nativeDisplay
  const embedded=JSON.parse(require('asar').extractFile(path.join(appPath,'Contents/Resources/app.asar'),'package.json').toString())
  assert.equal(embedded.version,pkg.version)
  receipt.steps.push('clean native extraction or readonly mounted DMG, executable arch, ad-hoc signature and ASAR bytes verified');receipt.application=appPath;save()
- if(['ui','parity','favorites'].includes(group)){
+ if(['ui','parity','favorites','batch120'].includes(group)){
   receipt.nativeDisplayProof=path.join(proof,'native-display113','display-proof.json');save()
   nativeDisplay=await require('./mac-native-display113.cjs').prepareNativeDisplay({outputDirectory:proof})
   assert.equal(nativeDisplay.proofFile,receipt.nativeDisplayProof)
@@ -52,6 +52,7 @@ let mount,attached=false,nativeDisplay
  else if(group==='gpu-diagnostic')run(process.execPath,['scripts/verify-mac-gpu-diagnostic.cjs',appPath,arch],{timeout:5*60*1000})
  else if(group==='download-location')run(process.execPath,['scripts/verify-download-location-112.cjs',appPath,arch,stage],{timeout:15*60*1000})
  else if(group==='favorites')run(process.execPath,['scripts/verify-favorites-113.cjs',appPath,arch,stage],{timeout:29*60*1000})
+ else if(group==='batch120')run(process.execPath,['scripts/verify-mac-batch120.cjs',appPath,arch,stage],{timeout:25*60*1000})
  else await require('./verify-mac-extra.cjs')(appPath,arch,group)
  receipt.steps.push(group==='gpu-diagnostic'?'isolated GPU diagnostic completed; no formal acceptance result is changed':'current native '+group+' checks completed');receipt.complete=true
  if(group==='gpu-diagnostic')receipt.classification='Diagnostic only; not GUI, motion or frame-rate acceptance'

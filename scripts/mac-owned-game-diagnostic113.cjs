@@ -105,7 +105,7 @@ async function createMacOwnedGameDiagnostics({root,profile,games,instanceId,outp
  assert.equal(real(profile),path.join(generatedRoot,'profile'));assert.equal(real(games),path.join(generatedRoot,'games §'))
  const effectiveGameDir=real(path.join(games,'versions',instanceId));assert(inside(generatedRoot,effectiveGameDir))
  const directory=path.join(output,phase+'-owned-game-diagnostic');assert(!fs.existsSync(directory),'preserve prior diagnostic attempt');fs.mkdirSync(directory)
- const report={schemaVersion:1,platform:process.platform,arch:process.arch,generatedRoot,profile,games,instanceId,launcherPID,readOnly:true,acceptanceUnchanged:true,captures:[],toolReceipts:[],complete:false,limitations:'sample and jcmd have observer overhead. No global processes, command lines, signal/force cleanup, graphics option changes, MOD changes or runtime downgrade. Missing evidence remains unknown.'},run=rawRunner({directory,execute})
+ const report={schemaVersion:1,platform:process.platform,arch:process.arch,generatedRoot,profile,games,instanceId,launcherPID,readOnly:true,acceptanceUnchanged:true,captures:[],toolReceipts:[],complete:false,limitations:'sample and jcmd have observer overhead. No global processes, command lines, signal/force cleanup, graphics option changes, MOD changes or runtime downgrade. AX is exact-owned-PID read-only, without permission requests. Desktop screenshots are of the disposable CI desktop and are not wholly attributed to the game; missing evidence remains unknown.'},run=rawRunner({directory,execute})
  const save=()=>{fs.writeFileSync(path.join(directory,'summary.json'),JSON.stringify(report,null,2)+'\n');onChange(report)};save()
  const source=path.join(__dirname,'mac-owned-game-diagnostic113.swift'),header=path.join(directory,'OwnedGame113-Bridging.h'),helper=path.join(directory,'owned-game-observer113')
  fs.writeFileSync(header,'#include <libproc.h>\n',{flag:'wx'});report.compiler={swiftSourceSHA256:sha(fs.readFileSync(source)),headerSHA256:sha(fs.readFileSync(header))}
@@ -136,16 +136,19 @@ async function createMacOwnedGameDiagnostics({root,profile,games,instanceId,outp
      const after=await identity(label+'-'+name+'-after',bound.pid,left());sameNativeIdentity(after,bound);item.identityAfter=after;item.complete=result.receipt.complete
      if(name==='windows'&&result.receipt.complete){item.observation=JSON.parse(result.stdout.toString('utf8'));assert.equal(item.observation.identityStable,true);assert.equal(item.observation.complete,true,'native window list unavailable; observation incomplete');assert(item.observation.windows.every(w=>w.ownerPID===bound.pid))}
      if(name==='native-files'&&result.receipt.complete){row.nativeReadback=JSON.parse(result.stdout.toString('utf8'));assert.equal(row.nativeReadback.errors.length,0,'generated native file readback incomplete; inspect original result')}
+     if(name==='alerts'&&result.receipt.complete){item.observation=JSON.parse(result.stdout.toString('utf8'));assert.equal(item.observation.identityStable,true);assert.equal(item.observation.complete,true)}
     }catch(error){item.complete=false;item.error={name:error.name,message:error.message}}
     finally{save()}
    }
    const jcmd=path.join(path.dirname(bound.javaPath),'jcmd')
    // Full binary readback runs in an owned QA tool child so filesystem stalls
    // cannot block the original verifier's asynchronous 240s world observation.
-   const tasks=[tool('windows',helper,['--observe',String(bound.pid),bound.creationUnixUS,bound.javaPath],2000),tool('loaded-images','/usr/sbin/lsof',['-n','-P','-a','-p',String(bound.pid),'-d','txt,mem','-F','pn'],2000),tool('native-files',process.execPath,[__filename,'--native-readback',readbackFile],5000),tool('sample','/usr/bin/sample',[String(bound.pid),'3','-file',path.join(directory,label+'-sample.original.txt')],5000)]
+   const desktopFile=path.join(directory,label+'-desktop.original.png');assert(!fs.existsSync(desktopFile),'preserve earlier desktop evidence')
+   const tasks=[tool('windows',helper,['--observe',String(bound.pid),bound.creationUnixUS,bound.javaPath],2000),tool('alerts',helper,['--alerts',String(bound.pid),bound.creationUnixUS,bound.javaPath],2000),tool('desktop','/usr/sbin/screencapture',['-x',desktopFile],2000),tool('loaded-images','/usr/sbin/lsof',['-n','-P','-a','-p',String(bound.pid),'-d','txt,mem','-F','pn'],2000),tool('native-files',process.execPath,[__filename,'--native-readback',readbackFile],5000),tool('sample','/usr/bin/sample',[String(bound.pid),'3','-file',path.join(directory,label+'-sample.original.txt')],5000)]
    if(fs.existsSync(jcmd))tasks.push(tool('threads',jcmd,[String(bound.pid),'Thread.print'],5000));else row.tools.push({name:'threads',complete:false,error:{message:'same selected Java runtime has no jcmd; no alternate runtime substituted'}})
    await Promise.allSettled(tasks)
    const sampleFile=path.join(directory,label+'-sample.original.txt');if(fs.existsSync(sampleFile)){const b=fs.readFileSync(sampleFile);row.sampleOriginal={file:path.basename(sampleFile),bytes:b.length,sha256:sha(b)}}
+   if(fs.existsSync(desktopFile)){const bytes=fs.readFileSync(desktopFile);row.desktopOriginal={file:path.basename(desktopFile),bytes:bytes.length,sha256:sha(bytes),classification:'Original disposable CI desktop readback, without focus changes. Includes system/other windows; not an owned-game-only image and not a game-rendering pass.'}}
    row.complete=row.tools.every(t=>t.complete);report.complete=row.complete
   }catch(error){row.error={name:error.name,message:error.message}}
   finally{row.finishedAt=new Date().toISOString();row.elapsedMs=Date.now()-capturedAt;row.exceededMaximum=row.elapsedMs>row.maximumMs;save()}

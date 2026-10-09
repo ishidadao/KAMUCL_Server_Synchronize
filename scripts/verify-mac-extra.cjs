@@ -9,10 +9,10 @@ module.exports=async function(appPath,arch,mode='all'){
   const proof=path.resolve(`release/mac-extra-${arch}-${mode}`);fs.mkdirSync(proof,{recursive:true})
   const runtimeVersion=require('electron/package.json').version
   assert.equal(runtimeVersion,require('../package.json').devDependencies.electron,'native integration must use the shared locked runtime')
-  const electron=require('electron')
-  assert(fs.existsSync(electron),'installed native Electron executable missing')
   const failures=[]
   const commands=[...(mode==='all'||mode==='startup'?[['scripts/verify-glass-startup.cjs'],['scripts/verify-glass-startup.cjs','--reduced']]:[]),...(mode==='all'||mode==='tools'?[['scripts/verify-mac-tools.cjs']]:[])]
+  let electron
+  if(commands.length){electron=require('electron');assert(fs.existsSync(electron),'installed native Electron executable missing')}
   const startedAt=Date.now(),runs=[]
   try { for(const args of commands){
     const env={...process.env};delete env.ELECTRON_RUN_AS_NODE

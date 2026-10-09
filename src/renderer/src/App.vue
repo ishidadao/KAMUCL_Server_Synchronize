@@ -436,7 +436,11 @@ function onDragLeave(e: DragEvent) {
 
 function onDrop(e: DragEvent) {
   if(store.editMode){e.preventDefault();e.stopImmediatePropagation();endDrag();return}
-  if (resourceDropPage()) {
+  // MRPACK is unambiguously a whole pack, even on a local resource page.
+  // Ordinary ZIP/JAR drops retain that page's existing batch import behavior.
+  const mrpackDrop = dragHasFiles(e) && Array.from(e.dataTransfer?.files ?? []).some(file => /\.mrpack$/i.test(file.name))
+  if (mrpackDrop) e.stopPropagation()
+  if (resourceDropPage() && !mrpackDrop) {
     endDrag(); e.preventDefault(); e.stopPropagation()
     if (dragHasFiles(e)) {
       if (store.resourceDropHandler) store.resourceDropHandler(e)
@@ -478,7 +482,7 @@ function onDrop(e: DragEvent) {
     modDrop.open = true
     return
   }
-  toast('不能混合拖入整合包与其他文件，请分开拖入', 'error')
+  toast('压缩包请一次导入一个文件；混合文件请分开拖入', 'error')
 }
 
 function routeYggdrasilImport(input: YggdrasilProviderInput) {
@@ -519,7 +523,7 @@ async function routeSingleImport(filePath: string, _displayName: string) {
 
 // ---------------- 整合包导入确认弹窗 ----------------
 const FORMAT_LABEL: Record<ModpackInfo['format'], string> = {
-  mrpack: 'Modrinth',
+  mrpack: 'Modrinth (.mrpack)',
   curseforge: 'CurseForge',
   fullpack: '完整客户端包'
 }
@@ -1166,6 +1170,10 @@ onMounted(async () => {
         launchFail.title = '游戏启动失败'
         launchFail.text = s.text
       } else if (s.status === 'exited') {
+        if (s.savedWindowSize?.scope === 'global' && store.settings && JSON.stringify(store.settings.resolution) === JSON.stringify(s.savedWindowSize.previous)) {
+          store.settings.resolution = { ...s.savedWindowSize.resolution }
+        }
+        if (s.savedWindowSize?.scope === 'instance') void refreshInstalled().catch(() => undefined)
         if (shouldReportGameCrash(s)) {
           launchFail.open = true
           launchFail.title = `游戏异常退出（代码 ${signedExitCode(s.code ?? null) ?? '未知'}）`
@@ -1461,7 +1469,7 @@ onUnmounted(() => {
             </div>
             <div data-ui="App:61130e12d278" v-if="!store.tasks.length" class="notice-empty">没有进行中的任务</div>
             <div data-ui="App:9f518a7bbb67" v-else class="notice-list">
-              <div data-ui="App:ac5c4222257f" v-for="t in store.tasks" :key="t.id" class="dl-item" :class="'dl-' + t.status">
+              <div data-ui="App:ac5c4222257f" v-for="t in store.tasks" :key="t.id" :data-task-id="t.id" class="dl-item" :class="'dl-' + t.status">
                 <div data-ui="App:1147e17bfe61" class="dl-item-head">
                   <span data-ui="App:a4f0a4d42456" class="dl-title" :title="t.title">{{ t.title }}</span>
                   <span data-ui="App:7faad0b50853" v-if="t.status === 'running'" class="dl-actions">
@@ -2307,7 +2315,7 @@ onUnmounted(() => {
 .dl-stages { display: grid; gap: 10px; margin-top: 14px; }
 .dl-stage { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--card-2); }
 .dl-stage-heading { display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-xs); font-weight: 600; }
-.dl-stage-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); margin-top: 3px; }
+.dl-stage-detail { overflow-wrap: anywhere; white-space: normal; line-height: 1.5; font-size: var(--text-xs); margin-top: 3px; }
 .dl-stage .dl-bar { height: 3px; margin-top: 6px; }
 .dl-stage.is-done .dl-stage-heading { color: var(--accent); }
 .dl-bar.is-indeterminate .dl-bar-fill {
