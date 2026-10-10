@@ -18,7 +18,7 @@ const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 
 // Fork releases must never overwrite upstream assets or tags.
-const REPO = 'ishidadao/KAMUCL_Update'
+const REPO = 'ishidadao/KAMUCL_Server_Synchronize'
 const root = path.join(__dirname, '..')
 const pkg = require(path.join(root, 'package.json'))
 const version = pkg.version

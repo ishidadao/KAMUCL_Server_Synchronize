@@ -1,9 +1,9 @@
 {
   "name": "kamucl",
   "productName": "KAMUCL",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "description": "KAMUCL - 简约美观的一键式 Minecraft 启动器",
-  "homepage": "https://github.com/ishidadao/KAMUCL_Update",
+  "homepage": "https://github.com/ishidadao/KAMUCL_Server_Synchronize",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
